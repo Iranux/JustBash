@@ -4,7 +4,7 @@
 # Iranux Ultimate Setup: PORT 22 EDITION (Stability First)
 # Domain: iranux.nz
 # Features: Node.js 22, BadVPN (Compiled), Telegram Bot, SSH Port 22
-# Status: GUARANTEED STABLE
+# Version: 1.1.0
 # ==============================================================================
 
 # Exit on critical errors
