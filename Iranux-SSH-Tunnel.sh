@@ -119,6 +119,21 @@ sed -i 's/^#\?Port .*/Port 22/' /etc/ssh/sshd_config
 # If Port line doesn't exist, append it
 grep -q "^Port 22" /etc/ssh/sshd_config || echo "Port 22" >> /etc/ssh/sshd_config
 
+# Enable password authentication
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config || echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+
+# Enable TCP forwarding for tunneling
+sed -i 's/^#\?AllowTcpForwarding.*/AllowTcpForwarding yes/' /etc/ssh/sshd_config
+grep -q "^AllowTcpForwarding yes" /etc/ssh/sshd_config || echo "AllowTcpForwarding yes" >> /etc/ssh/sshd_config
+
+# Ensure UsePAM is on
+sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
+grep -q "^UsePAM yes" /etc/ssh/sshd_config || echo "UsePAM yes" >> /etc/ssh/sshd_config
+
+# Ensure PAM limits module is loaded for SSH sessions
+grep -q "pam_limits.so" /etc/pam.d/sshd || echo "session required pam_limits.so" >> /etc/pam.d/sshd
+
 # Restart SSH
 systemctl restart ssh 2>/dev/null || systemctl restart sshd
 
@@ -137,19 +152,30 @@ echo -e "${CYAN}[i] Compiling BadVPN (UDPGW)...${RESET}"
 rm -rf /tmp/badvpn
 rm -f /usr/bin/badvpn-udpgw
 
+set +e
 git clone https://github.com/ambrop72/badvpn.git /tmp/badvpn > /dev/null 2>&1
 mkdir -p /tmp/badvpn/build
 cd /tmp/badvpn/build
 cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 > /dev/null 2>&1
 make install > /dev/null 2>&1
+set -e
 
-if [ -f /usr/local/bin/badvpn-udpgw ]; then
-    cp /usr/local/bin/badvpn-udpgw /usr/bin/
-elif [ -f ./udpgw/badvpn-udpgw ]; then
-    cp ./udpgw/badvpn-udpgw /usr/bin/
+if [ ! -f /usr/bin/badvpn-udpgw ]; then
+    if [ -f /usr/local/bin/badvpn-udpgw ]; then
+        cp /usr/local/bin/badvpn-udpgw /usr/bin/
+    elif [ -f ./udpgw/badvpn-udpgw ]; then
+        cp ./udpgw/badvpn-udpgw /usr/bin/
+    else
+        echo -e "${RED}[X] BadVPN compile failed! Continuing without UDPGW...${RESET}"
+    fi
 fi
 
-chmod +x /usr/bin/badvpn-udpgw
+if [ -f /usr/bin/badvpn-udpgw ]; then
+    chmod +x /usr/bin/badvpn-udpgw
+    echo -e "${GREEN}[+] BadVPN binary ready.${RESET}"
+else
+    echo -e "${RED}[!] BadVPN binary not found. Service will not start.${RESET}"
+fi
 cd /root
 rm -rf /tmp/badvpn
 
@@ -180,10 +206,18 @@ echo "SECRET_PATH=${SECRET_PATH}" >> ${CONFIG_FILE}
 echo "SSH_PORT=${FIXED_SSH_PORT}" >> ${CONFIG_FILE}
 echo "BADVPN_PORT=${BADVPN_PORT}" >> ${CONFIG_FILE}
 
+echo -e "${CYAN}[i] Generating SSL Certificate for ${DOMAIN}...${RESET}"
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -keyout ${APP_DIR}/ssl/server.key \
   -out ${APP_DIR}/ssl/server.crt \
-  -subj "/C=NZ/O=Iranux/CN=${DOMAIN}" 2>/dev/null
+  -subj "/C=NZ/O=Iranux/CN=${DOMAIN}" || { echo -e "${RED}[X] SSL certificate generation failed!${RESET}"; exit 1; }
+
+if [[ -f "${APP_DIR}/ssl/server.crt" && -f "${APP_DIR}/ssl/server.key" ]]; then
+    echo -e "${GREEN}[+] SSL Certificate generated successfully.${RESET}"
+else
+    echo -e "${RED}[X] SSL files missing after generation!${RESET}"
+    exit 1
+fi
 
 cat << EOF > ${APP_DIR}/server.js
 const https = require('https');
@@ -229,6 +263,8 @@ last_id=0
 while true; do
     updates=\$(curl -s --max-time 50 "https://api.telegram.org/bot\$BOT_TOKEN/getUpdates?offset=\$((last_id + 1))&timeout=40")
     if [[ -z "\$updates" ]]; then sleep 5; continue; fi
+    result_count=\$(echo "\$updates" | jq -r '.result | length')
+    if [[ "\$result_count" == "0" ]]; then sleep 2; continue; fi
 
     msg=\$(echo "\$updates" | jq -r '.result[-1].message.text // empty')
     update_id=\$(echo "\$updates" | jq -r '.result[-1].update_id // empty')
@@ -251,7 +287,7 @@ while true; do
                 if id "\$user" &>/dev/null; then
                      send_msg "⚠️ User exists."
                 else
-                    useradd -m -s /usr/sbin/nologin "\$user"
+                    useradd -m -s /bin/false "\$user"
                     echo "\$user:\$pass" | chpasswd
                     
                     if [[ -n "\$days" ]]; then
@@ -261,7 +297,7 @@ while true; do
                     
                     if [[ -n "\$limit" ]]; then
                         sed -i "/^\$user/d" /etc/security/limits.conf
-                        echo "\$user hard maxlogins \$limit" >> /etc/security/limits.conf
+                        echo "\$user soft maxlogins \$limit" >> /etc/security/limits.conf
                     else limit="Unlimited"; fi
 
                     payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
@@ -314,7 +350,7 @@ while true; do
         1)
             read -p "Username: " u_name
             read -p "Password: " u_pass
-            useradd -m -s /usr/sbin/nologin "$u_name"
+            useradd -m -s /bin/false "$u_name"
             echo "$u_name:$u_pass" | chpasswd
             
             payload="GET ${SECRET_PATH} HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
