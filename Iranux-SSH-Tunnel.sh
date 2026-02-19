@@ -337,6 +337,100 @@ GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# --- Non-interactive argument mode ---
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        /add|add)
+            u_name="$2"
+            u_pass="$3"
+            u_days="$4"
+            u_limit="$5"
+            if [[ -z "$u_name" || -z "$u_pass" ]]; then
+                echo -e "${RED}Usage: iranux /add <username> <password> [days] [maxlogins]${NC}"
+                exit 1
+            fi
+            if id "$u_name" &>/dev/null; then
+                echo -e "${RED}[!] User '$u_name' already exists.${NC}"
+                exit 1
+            fi
+            useradd -m -s /bin/false "$u_name"
+            echo "$u_name:$u_pass" | chpasswd
+            if [[ -n "$u_days" ]]; then
+                exp_date=$(date -d "+$u_days days" +%Y-%m-%d)
+                chage -E "$exp_date" "$u_name"
+            else
+                exp_date="Never"
+            fi
+            if [[ -n "$u_limit" ]]; then
+                sed -i "/^$u_name/d" /etc/security/limits.conf
+                echo "$u_name soft maxlogins $u_limit" >> /etc/security/limits.conf
+            else
+                u_limit="Unlimited"
+            fi
+            payload="GET ${SECRET_PATH} HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
+            echo -e "\n${GREEN}=== HTTP CUSTOM CONFIG ===${NC}"
+            echo -e "Protocol    : SSH-TLS-Payload"
+            echo -e "Remarks     : ${u_name}"
+            echo -e "SSH Host    : ${DOMAIN}"
+            echo -e "SSH Port    : 443"
+            echo -e "UDPGW Port  : ${BADVPN_PORT}"
+            echo -e "SSH Username: ${u_name}"
+            echo -e "SSH Password: ${u_pass}"
+            echo -e "Expiry      : ${exp_date}"
+            echo -e "Max Logins  : ${u_limit}"
+            echo -e "SNI         : ${DOMAIN}"
+            echo -e "---------------------------------"
+            echo -e "PAYLOAD:"
+            echo -e "${payload}"
+            echo -e "---------------------------------"
+            exit 0
+            ;;
+        /del|del)
+            u_del="$2"
+            if [[ -z "$u_del" ]]; then
+                echo -e "${RED}Usage: iranux /del <username>${NC}"
+                exit 1
+            fi
+            if id "$u_del" &>/dev/null; then
+                userdel -r "$u_del" 2>/dev/null
+                sed -i "/^$u_del/d" /etc/security/limits.conf
+                echo -e "${GREEN}[+] User '$u_del' deleted.${NC}"
+            else
+                echo -e "${RED}[!] User '$u_del' not found.${NC}"
+                exit 1
+            fi
+            exit 0
+            ;;
+        /list|list)
+            echo -e "${GREEN}=== System Users ===${NC}"
+            awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd
+            exit 0
+            ;;
+        /help|help|--help|-h)
+            echo -e "${CYAN}=== IRANUX CLI HELP ===${NC}"
+            echo -e ""
+            echo -e "${GREEN}USAGE:${NC}"
+            echo -e "  iranux                          Open interactive menu"
+            echo -e "  iranux /add <u> <p> [days] [lim] Create user non-interactively"
+            echo -e "  iranux /del <username>          Delete user non-interactively"
+            echo -e "  iranux /list                    List all users"
+            echo -e "  iranux /help                    Show this help"
+            echo -e ""
+            echo -e "${GREEN}EXAMPLES:${NC}"
+            echo -e "  iranux /add ali P@ss123 30 2    Create user 'ali', 30 days, max 2 logins"
+            echo -e "  iranux /add bob secret          Create user 'bob' with no expiry/limit"
+            echo -e "  iranux /del ali                 Delete user 'ali'"
+            echo -e "  iranux /list                    Show all users"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}[!] Unknown command: $1${NC}"
+            echo -e "Run 'iranux /help' for usage."
+            exit 1
+            ;;
+    esac
+fi
+
 while true; do
     clear
     echo -e "${CYAN}=== IRANUX TERMINAL MANAGER ===${NC}"
@@ -450,3 +544,29 @@ echo -e "   MANAGEMENT OPTIONS:"
 echo -e "   1. Telegram: Send ${CYAN}/menu${RESET} to your bot"
 echo -e "   2. Terminal: Type ${CYAN}iranux${RESET} to open menu"
 echo -e "=========================================="
+
+echo -e "\n${CYAN}===========================================${RESET}"
+echo -e "${CYAN}        IRANUX CLI COMMAND REFERENCE       ${RESET}"
+echo -e "${CYAN}===========================================${RESET}"
+echo -e ""
+echo -e "  ${GREEN}INTERACTIVE MODE:${RESET}"
+echo -e "    iranux                            Open interactive menu"
+echo -e ""
+echo -e "  ${GREEN}NON-INTERACTIVE COMMANDS:${RESET}"
+echo -e "    iranux /add <user> <pass> [days] [maxlogins]"
+echo -e "                                      Create a new SSH user"
+echo -e "    iranux /del <username>             Delete a user"
+echo -e "    iranux /list                       List all users"
+echo -e "    iranux /help                       Show full help"
+echo -e ""
+echo -e "  ${GREEN}EXAMPLES:${RESET}"
+echo -e "    ${CYAN}iranux /add ali P@ss 30 2${RESET}         Create 'ali', 30-day expiry, max 2 logins"
+echo -e "    ${CYAN}iranux /add bob secret${RESET}            Create 'bob' with no expiry or login limit"
+echo -e "    ${CYAN}iranux /del ali${RESET}                   Delete user 'ali'"
+echo -e "    ${CYAN}iranux /list${RESET}                      Show all system users"
+echo -e ""
+echo -e "  ${GREEN}TELEGRAM BOT COMMANDS:${RESET}"
+echo -e "    /menu                              Show bot menu"
+echo -e "    /add <user> <pass> <days> <limit>  Create user via Telegram"
+echo -e ""
+echo -e "${CYAN}===========================================${RESET}"
