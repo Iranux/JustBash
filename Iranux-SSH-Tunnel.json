@@ -78,7 +78,7 @@
             "sni": "string",
             "payload": "string",
             "expiry": "string|null",
-            "max_logins": "integer|string",
+            "max_logins": "integer|string"
           }
         },
         "error": {
