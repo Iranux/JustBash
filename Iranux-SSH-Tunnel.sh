@@ -4,7 +4,7 @@
 # Iranux Ultimate Setup: PORT 22 EDITION (Stability First)
 # Domain: iranux.nz
 # Features: Node.js 22, BadVPN (Compiled), Telegram Bot, SSH Port 22
-# Version: 1.3.0
+# Version: 1.4.0
 # ==============================================================================
 
 # Exit on critical errors
@@ -244,6 +244,7 @@ EOF
 # ------------------------------------------------------------------------------
 cat << EOF > ${APP_DIR}/bot.sh
 #!/bin/bash
+exec >> /opt/iranux-tunnel/logs/bot.log 2>&1
 BOT_TOKEN="${BOT_TOKEN}"
 ADMIN_ID="${ADMIN_ID}"
 DOMAIN="${DOMAIN}"
@@ -251,13 +252,23 @@ SECRET_PATH="${SECRET_PATH}"
 BADVPN="${BADVPN_PORT}"
 
 send_msg() {
+    local text="\$1"
+    local escaped=\$(printf '%s' "\$text" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
     curl -s -X POST "https://api.telegram.org/bot\$BOT_TOKEN/sendMessage" \
-        -d "chat_id=\$ADMIN_ID" \
-        -d "text=\$1" \
-        -d "parse_mode=HTML" > /dev/null
+        -H "Content-Type: application/json" \
+        -d "{\"chat_id\":\"\$ADMIN_ID\",\"text\":\"\$escaped\",\"parse_mode\":\"HTML\"}" \
+        >> /opt/iranux-tunnel/logs/bot.log 2>&1
 }
 
-send_msg "🚀 <b>Iranux Server Online!</b>%0A------------------%0AType /menu to start."
+# Validate bot token
+test_resp=\$(curl -s "https://api.telegram.org/bot\$BOT_TOKEN/getMe")
+if ! echo "\$test_resp" | grep -q '"ok":true'; then
+    echo "[ERROR] Invalid BOT_TOKEN or Telegram unreachable. Response: \$test_resp"
+    exit 1
+fi
+echo "[INFO] Bot token validated. Starting polling..."
+
+send_msg "🚀 <b>Iranux Server Online!</b>\n------------------\nType /menu to start."
 
 last_id=0
 while true; do
@@ -274,8 +285,13 @@ while true; do
         last_id=\$update_id
         
         if [[ "\$msg" == "/menu" || "\$msg" == "/start" || "\$msg" == "/help" ]]; then
-            help_text="🔰 <b>Iranux Manager</b>%0A%0A"
-            help_text+="<b>Create User:</b>%0A<code>/add user pass days limit</code>%0A"
+            help_text="🔰 <b>Iranux Manager</b>\n\n"
+            help_text+="<b>Commands:</b>\n"
+            help_text+="<code>/add user pass [days] [limit]</code> — Create user\n"
+            help_text+="<code>/del user</code> — Delete user\n"
+            help_text+="<code>/list</code> — List all users\n"
+            help_text+="<code>/status</code> — Server status\n"
+            help_text+="<code>/info user</code> — User info\n\n"
             help_text+="<i>Example: /add ali 1234 30 2</i>"
             send_msg "\$help_text"
         
@@ -296,30 +312,84 @@ while true; do
                         else exp_date="Never"; fi
                         
                         if [[ -n "\$limit" ]]; then
-                            sed -i "/^\$user/d" /etc/security/limits.conf
+                            sed -i "/^\$user[[:space:]]/d" /etc/security/limits.conf
                             echo "\$user soft maxlogins \$limit" >> /etc/security/limits.conf
                         else limit="Unlimited"; fi
 
                         payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
                         
-                        resp="✅ <b>Iranux Config Created</b>%0A"
-                        resp+="--------------------------------%0A"
-                        resp+="<b>Protocol:</b> <code>SSH-TLS-Payload</code>%0A%0A"
-                        resp+="<b>Remarks:</b> <code>\$user</code>%0A"
-                        resp+="<b>SSH Host:</b> <code>\$DOMAIN</code>%0A"
-                        resp+="<b>SSH Port:</b> <code>443</code>%0A"
-                        resp+="<b>UDPGW Port:</b> <code>\$BADVPN</code>%0A"
-                        resp+="<b>SSH Username:</b> <code>\$user</code>%0A"
-                        resp+="<b>SSH Password:</b> <code>\$pass</code>%0A"
-                        resp+="<b>SNI:</b> <code>\$DOMAIN</code>%0A"
-                        resp+="--------------------------------%0A"
-                        resp+="👇 <b>Payload (Copy Exact):</b>%0A<code>\$payload</code>"
+                        resp="✅ <b>Iranux Config Created</b>\n"
+                        resp+="--------------------------------\n"
+                        resp+="<b>Protocol:</b> <code>SSH-TLS-Payload</code>\n\n"
+                        resp+="<b>Remarks:</b> <code>\$user</code>\n"
+                        resp+="<b>SSH Host:</b> <code>\$DOMAIN</code>\n"
+                        resp+="<b>SSH Port:</b> <code>443</code>\n"
+                        resp+="<b>UDPGW Port:</b> <code>\$BADVPN</code>\n"
+                        resp+="<b>SSH Username:</b> <code>\$user</code>\n"
+                        resp+="<b>SSH Password:</b> <code>\$pass</code>\n"
+                        resp+="<b>SNI:</b> <code>\$DOMAIN</code>\n"
+                        resp+="--------------------------------\n"
+                        resp+="👇 <b>Payload (Copy Exact):</b>\n<code>\$payload</code>"
                         
                         send_msg "\$resp"
                     else
                         send_msg "❌ System error creating user."
                     fi
                 fi
+            fi
+
+        elif [[ "\$msg" == /del* ]]; then
+            read -r cmd u_del <<< "\$msg"
+            if [[ -z "\$u_del" ]]; then
+                send_msg "❌ Usage: <code>/del username</code>"
+            elif ! id "\$u_del" &>/dev/null; then
+                send_msg "❌ User <code>\$u_del</code> not found."
+            else
+                userdel -r "\$u_del" 2>/dev/null
+                sed -i "/^\$u_del[[:space:]]/d" /etc/security/limits.conf
+                send_msg "✅ User <code>\$u_del</code> deleted successfully."
+            fi
+
+        elif [[ "\$msg" == "/list" ]]; then
+            user_list=""
+            while IFS=: read -r uname _ uid _; do
+                if [[ "\$uid" -ge 1000 && "\$uname" != "nobody" ]]; then
+                    u_exp=\$(chage -l "\$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
+                    u_lim=\$(grep "^\$uname soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
+                    user_list+="\n• <code>\$uname</code> | Exp: \$u_exp | Logins: \$u_lim"
+                fi
+            done < /etc/passwd
+            if [[ -z "\$user_list" ]]; then
+                send_msg "📋 No users found."
+            else
+                send_msg "📋 <b>User List:</b>\$user_list"
+            fi
+
+        elif [[ "\$msg" == "/status" ]]; then
+            PROXY_ST=\$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
+            BADVPN_ST=\$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
+            UPTIME=\$(uptime -p 2>/dev/null || echo "unknown")
+            status_text="📊 <b>Server Status</b>\n"
+            status_text+="Domain: <code>\$DOMAIN</code>\n"
+            status_text+="SSH Port: <code>22</code>\n"
+            status_text+="Proxy (443): <code>\$PROXY_ST</code>\n"
+            status_text+="UDPGW (\$BADVPN): <code>\$BADVPN_ST</code>\n"
+            status_text+="Uptime: <code>\$UPTIME</code>"
+            send_msg "\$status_text"
+
+        elif [[ "\$msg" == /info* ]]; then
+            read -r cmd u_info <<< "\$msg"
+            if [[ -z "\$u_info" ]]; then
+                send_msg "❌ Usage: <code>/info username</code>"
+            elif ! id "\$u_info" &>/dev/null; then
+                send_msg "❌ User <code>\$u_info</code> not found."
+            else
+                u_exp=\$(chage -l "\$u_info" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
+                u_lim=\$(grep "^\$u_info soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
+                info_text="👤 <b>User Info: \$u_info</b>\n"
+                info_text+="Expiry: <code>\$u_exp</code>\n"
+                info_text+="Max Logins: <code>\$u_lim</code>"
+                send_msg "\$info_text"
             fi
         fi
     fi
@@ -627,9 +697,11 @@ fi
 while true; do
     clear
     echo -e "${CYAN}=== IRANUX TERMINAL MANAGER ===${NC}"
-    echo -e " 1) Create User (App Format)"
+    echo -e " 1) Create User"
     echo -e " 2) Delete User"
-    echo -e " 3) Show Online Users"
+    echo -e " 3) List Users"
+    echo -e " 4) User Info"
+    echo -e " 5) Server Status"
     echo -e " 0) Exit"
     echo -e "-------------------------------"
     read -p " Select: " choice
@@ -637,11 +709,32 @@ while true; do
         1)
             read -p "Username: " u_name
             read -p "Password: " u_pass
-            useradd -m -s /bin/false "$u_name"
+            read -p "Expiry days (leave blank = never): " u_days
+            read -p "Max logins (leave blank = unlimited): " u_limit
+            if id "$u_name" &>/dev/null; then
+                echo -e "${RED}[!] User already exists.${NC}"
+                read -p "Press Enter..."
+                continue
+            fi
+            if ! useradd -m -s /bin/false "$u_name"; then
+                echo -e "${RED}[!] Failed to create user.${NC}"
+                read -p "Press Enter..."
+                continue
+            fi
             echo "$u_name:$u_pass" | chpasswd
-            
+            if [[ -n "$u_days" ]]; then
+                exp_date=$(date -d "+$u_days days" +%Y-%m-%d)
+                chage -E "$exp_date" "$u_name"
+            else
+                exp_date="Never"
+            fi
+            if [[ -n "$u_limit" ]]; then
+                sed -i "/^$u_name[[:space:]]/d" /etc/security/limits.conf
+                echo "$u_name soft maxlogins $u_limit" >> /etc/security/limits.conf
+            else
+                u_limit="Unlimited"
+            fi
             payload="GET ${SECRET_PATH} HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
-            
             echo -e "\n${GREEN}=== HTTP CUSTOM CONFIG ===${NC}"
             echo -e "Protocol    : SSH-TLS-Payload"
             echo -e "Remarks     : ${u_name}"
@@ -650,6 +743,8 @@ while true; do
             echo -e "UDPGW Port  : ${BADVPN_PORT}"
             echo -e "SSH Username: ${u_name}"
             echo -e "SSH Password: ${u_pass}"
+            echo -e "Expiry      : ${exp_date}"
+            echo -e "Max Logins  : ${u_limit}"
             echo -e "SNI         : ${DOMAIN}"
             echo -e "---------------------------------"
             echo -e "PAYLOAD:"
@@ -669,6 +764,32 @@ while true; do
         3)
             echo -e "${GREEN}Users:${NC}"
             awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd
+            read -p "Press Enter..."
+            ;;
+        4)
+            read -p "Username: " u_info
+            if ! id "$u_info" &>/dev/null; then
+                echo -e "${RED}[!] User not found.${NC}"
+            else
+                u_expiry=$(chage -l "$u_info" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
+                u_maxlogins=$(grep "^$u_info soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print $4}' || echo "Unlimited")
+                echo -e "${GREEN}=== User Info: $u_info ===${NC}"
+                echo -e "Username   : $u_info"
+                echo -e "Expiry     : $u_expiry"
+                echo -e "Max Logins : $u_maxlogins"
+            fi
+            read -p "Press Enter..."
+            ;;
+        5)
+            PROXY_STATUS=$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
+            BADVPN_STATUS=$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
+            UPTIME=$(uptime -p 2>/dev/null || echo "unknown")
+            echo -e "${CYAN}=== IRANUX STATUS ===${NC}"
+            echo -e "Domain       : ${DOMAIN}"
+            echo -e "SSH Port     : 22"
+            echo -e "Proxy Port   : 443 (${PROXY_STATUS})"
+            echo -e "UDPGW Port   : ${BADVPN_PORT} (${BADVPN_STATUS})"
+            echo -e "Uptime       : ${UPTIME}"
             read -p "Press Enter..."
             ;;
         0) exit 0 ;;
