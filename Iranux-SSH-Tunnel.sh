@@ -6,7 +6,7 @@
 # Features: Node.js 22, BadVPN (Compiled), Telegram Bot, SSH Port 22
 # Version: 1.4.0
 # ==============================================================================
-
+echo '#@INSTALL_START'
 # Exit on critical errors
 set -e
 
