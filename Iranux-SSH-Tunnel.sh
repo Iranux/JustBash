@@ -253,11 +253,12 @@ BADVPN="${BADVPN_PORT}"
 
 send_msg() {
     local text="\$1"
-    local escaped=\$(printf '%s' "\$text" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+    local json
+    json=\$(jq -n --arg chat "\$ADMIN_ID" --arg txt "\$text" \
+        '{chat_id: \$chat, text: \$txt, parse_mode: "HTML"}')
     curl -s -X POST "https://api.telegram.org/bot\$BOT_TOKEN/sendMessage" \
         -H "Content-Type: application/json" \
-        -d "{\"chat_id\":\"\$ADMIN_ID\",\"text\":\"\$escaped\",\"parse_mode\":\"HTML\"}" \
-        >> /opt/iranux-tunnel/logs/bot.log 2>&1
+        -d "\$json" >> /opt/iranux-tunnel/logs/bot.log 2>&1
 }
 
 # Validate bot token
@@ -268,7 +269,9 @@ if ! echo "\$test_resp" | grep -q '"ok":true'; then
 fi
 echo "[INFO] Bot token validated. Starting polling..."
 
-send_msg "🚀 <b>Iranux Server Online!</b>\n------------------\nType /menu to start."
+send_msg "🚀 <b>Iranux Server Online!</b>
+------------------
+Type /menu to start."
 
 last_id=0
 while true; do
@@ -285,14 +288,16 @@ while true; do
         last_id=\$update_id
         
         if [[ "\$msg" == "/menu" || "\$msg" == "/start" || "\$msg" == "/help" ]]; then
-            help_text="🔰 <b>Iranux Manager</b>\n\n"
-            help_text+="<b>Commands:</b>\n"
-            help_text+="<code>/add user pass [days] [limit]</code> — Create user\n"
-            help_text+="<code>/del user</code> — Delete user\n"
-            help_text+="<code>/list</code> — List all users\n"
-            help_text+="<code>/status</code> — Server status\n"
-            help_text+="<code>/info user</code> — User info\n\n"
-            help_text+="<i>Example: /add ali 1234 30 2</i>"
+            help_text="🔰 <b>Iranux Manager</b>
+
+<b>Commands:</b>
+<code>/add user pass [days] [limit]</code> — Create user
+<code>/del user</code> — Delete user
+<code>/list</code> — List all users
+<code>/status</code> — Server status
+<code>/info user</code> — User info
+
+<i>Example: /add ali 1234 30 2</i>"
             send_msg "\$help_text"
         
         elif [[ "\$msg" == /add* ]]; then
@@ -318,18 +323,20 @@ while true; do
 
                         payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
                         
-                        resp="✅ <b>Iranux Config Created</b>\n"
-                        resp+="--------------------------------\n"
-                        resp+="<b>Protocol:</b> <code>SSH-TLS-Payload</code>\n\n"
-                        resp+="<b>Remarks:</b> <code>\$user</code>\n"
-                        resp+="<b>SSH Host:</b> <code>\$DOMAIN</code>\n"
-                        resp+="<b>SSH Port:</b> <code>443</code>\n"
-                        resp+="<b>UDPGW Port:</b> <code>\$BADVPN</code>\n"
-                        resp+="<b>SSH Username:</b> <code>\$user</code>\n"
-                        resp+="<b>SSH Password:</b> <code>\$pass</code>\n"
-                        resp+="<b>SNI:</b> <code>\$DOMAIN</code>\n"
-                        resp+="--------------------------------\n"
-                        resp+="👇 <b>Payload (Copy Exact):</b>\n<code>\$payload</code>"
+                        resp="✅ <b>Iranux Config Created</b>
+--------------------------------
+<b>Protocol:</b> <code>SSH-TLS-Payload</code>
+
+<b>Remarks:</b> <code>\$user</code>
+<b>SSH Host:</b> <code>\$DOMAIN</code>
+<b>SSH Port:</b> <code>443</code>
+<b>UDPGW Port:</b> <code>\$BADVPN</code>
+<b>SSH Username:</b> <code>\$user</code>
+<b>SSH Password:</b> <code>\$pass</code>
+<b>SNI:</b> <code>\$DOMAIN</code>
+--------------------------------
+👇 <b>Payload (Copy Exact):</b>
+<code>\$payload</code>"
                         
                         send_msg "\$resp"
                     else
@@ -356,7 +363,8 @@ while true; do
                 if [[ "\$uid" -ge 1000 && "\$uname" != "nobody" ]]; then
                     u_exp=\$(chage -l "\$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
                     u_lim=\$(grep "^\$uname soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
-                    user_list+="\n• <code>\$uname</code> | Exp: \$u_exp | Logins: \$u_lim"
+                    user_list+="
+• <code>\$uname</code> | Exp: \$u_exp | Logins: \$u_lim"
                 fi
             done < /etc/passwd
             if [[ -z "\$user_list" ]]; then
@@ -369,12 +377,12 @@ while true; do
             PROXY_ST=\$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
             BADVPN_ST=\$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
             UPTIME=\$(uptime -p 2>/dev/null || echo "unknown")
-            status_text="📊 <b>Server Status</b>\n"
-            status_text+="Domain: <code>\$DOMAIN</code>\n"
-            status_text+="SSH Port: <code>22</code>\n"
-            status_text+="Proxy (443): <code>\$PROXY_ST</code>\n"
-            status_text+="UDPGW (\$BADVPN): <code>\$BADVPN_ST</code>\n"
-            status_text+="Uptime: <code>\$UPTIME</code>"
+            status_text="📊 <b>Server Status</b>
+Domain: <code>\$DOMAIN</code>
+SSH Port: <code>22</code>
+Proxy (443): <code>\$PROXY_ST</code>
+UDPGW (\$BADVPN): <code>\$BADVPN_ST</code>
+Uptime: <code>\$UPTIME</code>"
             send_msg "\$status_text"
 
         elif [[ "\$msg" == /info* ]]; then
@@ -386,9 +394,9 @@ while true; do
             else
                 u_exp=\$(chage -l "\$u_info" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
                 u_lim=\$(grep "^\$u_info soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
-                info_text="👤 <b>User Info: \$u_info</b>\n"
-                info_text+="Expiry: <code>\$u_exp</code>\n"
-                info_text+="Max Logins: <code>\$u_lim</code>"
+                info_text="👤 <b>User Info: \$u_info</b>
+Expiry: <code>\$u_exp</code>
+Max Logins: <code>\$u_lim</code>"
                 send_msg "\$info_text"
             fi
         fi
