@@ -69,16 +69,16 @@
           "status": "success",
           "command": "add",
           "data": {
+            "protocol": "string",
             "username": "string",
             "password": "string",
-            "expiry": "string|null",
-            "max_logins": "integer|string",
             "ssh_host": "string",
             "ssh_port": "integer",
             "udpgw_port": "integer",
             "sni": "string",
-            "protocol": "string",
-            "payload": "string"
+            "payload": "string",
+            "expiry": "string|null",
+            "max_logins": "integer|string",
           }
         },
         "error": {
