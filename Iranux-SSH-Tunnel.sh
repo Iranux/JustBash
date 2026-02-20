@@ -244,6 +244,7 @@ EOF
 # ------------------------------------------------------------------------------
 cat << EOF > ${APP_DIR}/bot.sh
 #!/bin/bash
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Bot starting up..." >> /opt/iranux-tunnel/logs/bot.log
 exec >> /opt/iranux-tunnel/logs/bot.log 2>&1
 BOT_TOKEN="${BOT_TOKEN}"
 ADMIN_ID="${ADMIN_ID}"
@@ -253,22 +254,25 @@ BADVPN="${BADVPN_PORT}"
 
 send_msg() {
     local text="\$1"
-    local escaped=\$(printf '%s' "\$text" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+    local json
+    json=\$(jq -n --arg chat "\$ADMIN_ID" --arg txt "\$text" \
+        '{"chat_id": \$chat, "text": \$txt, "parse_mode": "HTML"}')
     curl -s -X POST "https://api.telegram.org/bot\$BOT_TOKEN/sendMessage" \
         -H "Content-Type: application/json" \
-        -d "{\"chat_id\":\"\$ADMIN_ID\",\"text\":\"\$escaped\",\"parse_mode\":\"HTML\"}" \
-        >> /opt/iranux-tunnel/logs/bot.log 2>&1
+        -d "\$json" >> /opt/iranux-tunnel/logs/bot.log 2>&1
 }
 
 # Validate bot token
 test_resp=\$(curl -s "https://api.telegram.org/bot\$BOT_TOKEN/getMe")
 if ! echo "\$test_resp" | grep -q '"ok":true'; then
-    echo "[ERROR] Invalid BOT_TOKEN or Telegram unreachable. Response: \$test_resp"
+    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] Invalid BOT_TOKEN or Telegram unreachable. Response: \$test_resp"
     exit 1
 fi
-echo "[INFO] Bot token validated. Starting polling..."
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Bot token validated. Starting polling..."
 
-send_msg "🚀 <b>Iranux Server Online!</b>\n------------------\nType /menu to start."
+send_msg "🚀 <b>Iranux Server Online!</b>
+------------------
+Type /menu to start."
 
 last_id=0
 while true; do
@@ -277,63 +281,77 @@ while true; do
     result_count=\$(echo "\$updates" | jq -r '.result | length')
     if [[ "\$result_count" == "0" ]]; then sleep 2; continue; fi
 
-    msg=\$(echo "\$updates" | jq -r '.result[-1].message.text // empty')
-    update_id=\$(echo "\$updates" | jq -r '.result[-1].update_id // empty')
-    chat_id=\$(echo "\$updates" | jq -r '.result[-1].message.chat.id // empty')
+    for i in \$(seq 0 \$((result_count - 1))); do
+        update_id=\$(echo "\$updates" | jq -r ".result[\$i].update_id // empty")
+        chat_id=\$(echo "\$updates" | jq -r ".result[\$i].message.chat.id // empty")
+        msg=\$(echo "\$updates" | jq -r ".result[\$i].message.text // empty")
 
-    if [[ "\$chat_id" == "\$ADMIN_ID" && -n "\$update_id" && "\$update_id" != "\$last_id" ]]; then
+        [[ -z "\$update_id" ]] && continue
         last_id=\$update_id
-        
+
+        if [[ "\$chat_id" != "\$ADMIN_ID" || -z "\$msg" ]]; then continue; fi
+
         if [[ "\$msg" == "/menu" || "\$msg" == "/start" || "\$msg" == "/help" ]]; then
-            help_text="🔰 <b>Iranux Manager</b>\n\n"
-            help_text+="<b>Commands:</b>\n"
-            help_text+="<code>/add user pass [days] [limit]</code> — Create user\n"
-            help_text+="<code>/del user</code> — Delete user\n"
-            help_text+="<code>/list</code> — List all users\n"
-            help_text+="<code>/status</code> — Server status\n"
-            help_text+="<code>/info user</code> — User info\n\n"
-            help_text+="<i>Example: /add ali 1234 30 2</i>"
-            send_msg "\$help_text"
-        
+            send_msg "🔰 <b>Iranux Manager</b>
+
+<b>Commands:</b>
+<code>/add user pass [days] [limit]</code> — Create user
+<code>/del user</code> — Delete user
+<code>/list</code> — List all users
+<code>/status</code> — Server status
+<code>/info user</code> — User info
+<code>/logs</code> — View recent logs
+<code>/restart</code> — Restart tunnel service
+
+<i>Note: password cannot contain spaces</i>
+<i>Example: /add ali 1234 30 2</i>"
+
         elif [[ "\$msg" == /add* ]]; then
             read -r cmd user pass days limit <<< "\$msg"
             if [[ -z "\$user" || -z "\$pass" ]]; then
-                send_msg "❌ Error. Use: <code>/add user pass days limit</code>"
+                send_msg "❌ Usage: <code>/add username password [days] [limit]</code>
+<i>Example: /add ali secret123 30 2</i>"
             else
                 if id "\$user" &>/dev/null; then
-                     send_msg "⚠️ User exists."
+                    send_msg "⚠️ User <code>\$user</code> already exists."
                 else
                     if useradd -m -s /bin/false "\$user"; then
                         echo "\$user:\$pass" | chpasswd
-                        
+
                         if [[ -n "\$days" ]]; then
                             exp_date=\$(date -d "+\$days days" +%Y-%m-%d)
                             chage -E "\$exp_date" "\$user"
-                        else exp_date="Never"; fi
-                        
+                        else
+                            exp_date="Never"
+                        fi
+
                         if [[ -n "\$limit" ]]; then
                             sed -i "/^\$user[[:space:]]/d" /etc/security/limits.conf
                             echo "\$user soft maxlogins \$limit" >> /etc/security/limits.conf
-                        else limit="Unlimited"; fi
+                        else
+                            limit="Unlimited"
+                        fi
 
                         payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
-                        
-                        resp="✅ <b>Iranux Config Created</b>\n"
-                        resp+="--------------------------------\n"
-                        resp+="<b>Protocol:</b> <code>SSH-TLS-Payload</code>\n\n"
-                        resp+="<b>Remarks:</b> <code>\$user</code>\n"
-                        resp+="<b>SSH Host:</b> <code>\$DOMAIN</code>\n"
-                        resp+="<b>SSH Port:</b> <code>443</code>\n"
-                        resp+="<b>UDPGW Port:</b> <code>\$BADVPN</code>\n"
-                        resp+="<b>SSH Username:</b> <code>\$user</code>\n"
-                        resp+="<b>SSH Password:</b> <code>\$pass</code>\n"
-                        resp+="<b>SNI:</b> <code>\$DOMAIN</code>\n"
-                        resp+="--------------------------------\n"
-                        resp+="👇 <b>Payload (Copy Exact):</b>\n<code>\$payload</code>"
-                        
-                        send_msg "\$resp"
+
+                        send_msg "✅ <b>Iranux Config Created</b>
+--------------------------------
+<b>Protocol:</b> <code>SSH-TLS-Payload</code>
+
+<b>Remarks:</b> <code>\$user</code>
+<b>SSH Host:</b> <code>\$DOMAIN</code>
+<b>SSH Port:</b> <code>443</code>
+<b>UDPGW Port:</b> <code>\$BADVPN</code>
+<b>SSH Username:</b> <code>\$user</code>
+<b>SSH Password:</b> <code>\$pass</code>
+<b>SNI:</b> <code>\$DOMAIN</code>
+<b>Expiry:</b> <code>\$exp_date</code>
+<b>Max Logins:</b> <code>\$limit</code>
+--------------------------------
+👇 <b>Payload (Copy Exact):</b>
+<code>\$payload</code>"
                     else
-                        send_msg "❌ System error creating user."
+                        send_msg "❌ System error creating user <code>\$user</code>."
                     fi
                 fi
             fi
@@ -356,7 +374,8 @@ while true; do
                 if [[ "\$uid" -ge 1000 && "\$uname" != "nobody" ]]; then
                     u_exp=\$(chage -l "\$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
                     u_lim=\$(grep "^\$uname soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
-                    user_list+="\n• <code>\$uname</code> | Exp: \$u_exp | Logins: \$u_lim"
+                    user_list+="\$(printf '\n• ')";
+                    user_list+="<code>\$uname</code> | Exp: \$u_exp | Logins: \$u_lim"
                 fi
             done < /etc/passwd
             if [[ -z "\$user_list" ]]; then
@@ -368,14 +387,15 @@ while true; do
         elif [[ "\$msg" == "/status" ]]; then
             PROXY_ST=\$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
             BADVPN_ST=\$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
+            BOT_ST=\$(systemctl is-active iranux-bot 2>/dev/null || echo "inactive")
             UPTIME=\$(uptime -p 2>/dev/null || echo "unknown")
-            status_text="📊 <b>Server Status</b>\n"
-            status_text+="Domain: <code>\$DOMAIN</code>\n"
-            status_text+="SSH Port: <code>22</code>\n"
-            status_text+="Proxy (443): <code>\$PROXY_ST</code>\n"
-            status_text+="UDPGW (\$BADVPN): <code>\$BADVPN_ST</code>\n"
-            status_text+="Uptime: <code>\$UPTIME</code>"
-            send_msg "\$status_text"
+            send_msg "📊 <b>Server Status</b>
+Domain: <code>\$DOMAIN</code>
+SSH Port: <code>22</code>
+Proxy (443): <code>\$PROXY_ST</code>
+UDPGW (\$BADVPN): <code>\$BADVPN_ST</code>
+Bot: <code>\$BOT_ST</code>
+Uptime: <code>\$UPTIME</code>"
 
         elif [[ "\$msg" == /info* ]]; then
             read -r cmd u_info <<< "\$msg"
@@ -386,17 +406,38 @@ while true; do
             else
                 u_exp=\$(chage -l "\$u_info" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
                 u_lim=\$(grep "^\$u_info soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
-                info_text="👤 <b>User Info: \$u_info</b>\n"
-                info_text+="Expiry: <code>\$u_exp</code>\n"
-                info_text+="Max Logins: <code>\$u_lim</code>"
-                send_msg "\$info_text"
+                send_msg "👤 <b>User Info: \$u_info</b>
+Expiry: <code>\$u_exp</code>
+Max Logins: <code>\$u_lim</code>"
             fi
+
+        elif [[ "\$msg" == "/logs" ]]; then
+            log_tail=\$(tail -20 /opt/iranux-tunnel/logs/bot.log 2>/dev/null | head -c 3000 || echo "No logs found")
+            send_msg "📄 <b>Recent Bot Logs:</b>
+<pre>\$log_tail</pre>"
+
+        elif [[ "\$msg" == "/restart" ]]; then
+            send_msg "🔄 Restarting tunnel service..."
+            systemctl restart iranux-tunnel 2>/dev/null
+            sleep 2
+            PROXY_ST=\$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
+            send_msg "✅ Tunnel restarted: <code>\$PROXY_ST</code>"
+
+        else
+            send_msg "❓ Unknown command: <code>\$msg</code>
+Send /menu to see available commands."
         fi
-    fi
+    done
     sleep 1
 done
 EOF
 chmod +x ${APP_DIR}/bot.sh
+
+# Restart bot service if already running (handles re-runs of installer)
+if systemctl is-active --quiet iranux-bot 2>/dev/null; then
+    echo -e "${CYAN}[i] Restarting iranux-bot service with new bot.sh...${RESET}"
+    systemctl restart iranux-bot
+fi
 
 # ------------------------------------------------------------------------------
 # PHASE 7: CLI MENU
@@ -804,8 +845,9 @@ chmod +x /usr/local/bin/iranux
 # ------------------------------------------------------------------------------
 cat << EOF > /etc/systemd/system/iranux-tunnel.service
 [Unit]
-Description=Iranux Tunnel
-After=network.target
+Description=Iranux SSH Tunnel Proxy
+After=network-online.target
+Wants=network-online.target
 [Service]
 Type=simple
 User=root
@@ -813,6 +855,8 @@ WorkingDirectory=${APP_DIR}
 ExecStart=/usr/bin/node ${APP_DIR}/server.js
 Restart=always
 RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=3
 LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
@@ -820,22 +864,28 @@ EOF
 
 cat << EOF > /etc/systemd/system/iranux-bot.service
 [Unit]
-Description=Iranux Bot
-After=network.target
+Description=Iranux Telegram Bot
+After=network-online.target
+Wants=network-online.target
 [Service]
 Type=simple
 User=root
 WorkingDirectory=${APP_DIR}
 ExecStart=/bin/bash ${APP_DIR}/bot.sh
 Restart=always
-RestartSec=5
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=3
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable iranux-tunnel --now
-systemctl enable iranux-bot --now
+systemctl enable iranux-tunnel
+systemctl restart iranux-tunnel
+systemctl enable iranux-bot
+systemctl restart iranux-bot
+echo -e "${GREEN}[+] All services started.${RESET}"
 
 # Final Check
 sleep 2
@@ -882,5 +932,7 @@ echo -e ""
 echo -e "  ${GREEN}TELEGRAM BOT COMMANDS:${RESET}"
 echo -e "    /menu                              Show bot menu"
 echo -e "    /add <user> <pass> <days> <limit>  Create user via Telegram"
+echo -e "    /logs                              View recent bot logs"
+echo -e "    /restart                           Restart tunnel service"
 echo -e ""
 echo -e "${CYAN}===========================================${RESET}"
