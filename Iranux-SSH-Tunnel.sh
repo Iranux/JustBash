@@ -4,7 +4,7 @@
 # Iranux Ultimate Setup: PORT 22 EDITION (Stability First)
 # Domain: iranux.nz
 # Features: Node.js 22, BadVPN (Compiled), Telegram Bot, SSH Port 22
-# Version: 1.1.0
+# Version: 1.2.0
 # ==============================================================================
 
 # Exit on critical errors
@@ -287,35 +287,38 @@ while true; do
                 if id "\$user" &>/dev/null; then
                      send_msg "⚠️ User exists."
                 else
-                    useradd -m -s /bin/false "\$user"
-                    echo "\$user:\$pass" | chpasswd
-                    
-                    if [[ -n "\$days" ]]; then
-                        exp_date=\$(date -d "+\$days days" +%Y-%m-%d)
-                        chage -E "\$exp_date" "\$user"
-                    else exp_date="Never"; fi
-                    
-                    if [[ -n "\$limit" ]]; then
-                        sed -i "/^\$user/d" /etc/security/limits.conf
-                        echo "\$user soft maxlogins \$limit" >> /etc/security/limits.conf
-                    else limit="Unlimited"; fi
+                    if useradd -m -s /bin/false "\$user"; then
+                        echo "\$user:\$pass" | chpasswd
+                        
+                        if [[ -n "\$days" ]]; then
+                            exp_date=\$(date -d "+\$days days" +%Y-%m-%d)
+                            chage -E "\$exp_date" "\$user"
+                        else exp_date="Never"; fi
+                        
+                        if [[ -n "\$limit" ]]; then
+                            sed -i "/^\$user/d" /etc/security/limits.conf
+                            echo "\$user soft maxlogins \$limit" >> /etc/security/limits.conf
+                        else limit="Unlimited"; fi
 
-                    payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
-                    
-                    resp="✅ <b>Iranux Config Created</b>%0A"
-                    resp+="--------------------------------%0A"
-                    resp+="<b>Protocol:</b> <code>SSH-TLS-Payload</code>%0A%0A"
-                    resp+="<b>Remarks:</b> <code>\$user</code>%0A"
-                    resp+="<b>SSH Host:</b> <code>\$DOMAIN</code>%0A"
-                    resp+="<b>SSH Port:</b> <code>443</code>%0A"
-                    resp+="<b>UDPGW Port:</b> <code>\$BADVPN</code>%0A"
-                    resp+="<b>SSH Username:</b> <code>\$user</code>%0A"
-                    resp+="<b>SSH Password:</b> <code>\$pass</code>%0A"
-                    resp+="<b>SNI:</b> <code>\$DOMAIN</code>%0A"
-                    resp+="--------------------------------%0A"
-                    resp+="👇 <b>Payload (Copy Exact):</b>%0A<code>\$payload</code>"
-                    
-                    send_msg "\$resp"
+                        payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
+                        
+                        resp="✅ <b>Iranux Config Created</b>%0A"
+                        resp+="--------------------------------%0A"
+                        resp+="<b>Protocol:</b> <code>SSH-TLS-Payload</code>%0A%0A"
+                        resp+="<b>Remarks:</b> <code>\$user</code>%0A"
+                        resp+="<b>SSH Host:</b> <code>\$DOMAIN</code>%0A"
+                        resp+="<b>SSH Port:</b> <code>443</code>%0A"
+                        resp+="<b>UDPGW Port:</b> <code>\$BADVPN</code>%0A"
+                        resp+="<b>SSH Username:</b> <code>\$user</code>%0A"
+                        resp+="<b>SSH Password:</b> <code>\$pass</code>%0A"
+                        resp+="<b>SNI:</b> <code>\$DOMAIN</code>%0A"
+                        resp+="--------------------------------%0A"
+                        resp+="👇 <b>Payload (Copy Exact):</b>%0A<code>\$payload</code>"
+                        
+                        send_msg "\$resp"
+                    else
+                        send_msg "❌ System error creating user."
+                    fi
                 fi
             fi
         fi
@@ -337,6 +340,26 @@ GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# JSON output helpers
+json_success() {
+    local cmd="$1"
+    local data="$2"
+    printf '{"status":"success","command":"%s","data":%s}\n' "$cmd" "$data"
+}
+
+json_error() {
+    local cmd="$1"
+    local code="$2"
+    local msg="$3"
+    printf '{"status":"error","command":"%s","code":%s,"message":"%s"}\n' "$cmd" "$code" "$msg"
+    exit "$code"
+}
+
+has_json() {
+    for arg in "$@"; do [[ "$arg" == "--json" ]] && return 0; done
+    return 1
+}
+
 # --- Non-interactive argument mode ---
 if [[ $# -gt 0 ]]; then
     case "$1" in
@@ -346,14 +369,20 @@ if [[ $# -gt 0 ]]; then
             u_days="$4"
             u_limit="$5"
             if [[ -z "$u_name" || -z "$u_pass" ]]; then
-                echo -e "${RED}Usage: iranux /add <username> <password> [days] [maxlogins]${NC}"
-                exit 1
+                has_json "$@" && json_error "add" 5 "Invalid parameter: username and password required" || \
+                    echo -e "${RED}Usage: iranux /add <username> <password> [days] [maxlogins]${NC}"
+                exit 5
             fi
             if id "$u_name" &>/dev/null; then
-                echo -e "${RED}[!] User '$u_name' already exists.${NC}"
-                exit 1
+                has_json "$@" && json_error "add" 3 "User already exists" || \
+                    echo -e "${RED}[!] User '$u_name' already exists.${NC}"
+                exit 3
             fi
-            useradd -m -s /bin/false "$u_name"
+            if ! useradd -m -s /bin/false "$u_name"; then
+                has_json "$@" && json_error "add" 6 "System error creating user" || \
+                    echo -e "${RED}[!] System error: failed to create user '$u_name'.${NC}"
+                exit 6
+            fi
             echo "$u_name:$u_pass" | chpasswd
             if [[ -n "$u_days" ]]; then
                 exp_date=$(date -d "+$u_days days" +%Y-%m-%d)
@@ -368,59 +397,162 @@ if [[ $# -gt 0 ]]; then
                 u_limit="Unlimited"
             fi
             payload="GET ${SECRET_PATH} HTTP/1.1[crlf]Host: ${DOMAIN}[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
-            echo -e "\n${GREEN}=== HTTP CUSTOM CONFIG ===${NC}"
-            echo -e "Protocol    : SSH-TLS-Payload"
-            echo -e "Remarks     : ${u_name}"
-            echo -e "SSH Host    : ${DOMAIN}"
-            echo -e "SSH Port    : 443"
-            echo -e "UDPGW Port  : ${BADVPN_PORT}"
-            echo -e "SSH Username: ${u_name}"
-            echo -e "SSH Password: ${u_pass}"
-            echo -e "Expiry      : ${exp_date}"
-            echo -e "Max Logins  : ${u_limit}"
-            echo -e "SNI         : ${DOMAIN}"
-            echo -e "---------------------------------"
-            echo -e "PAYLOAD:"
-            echo -e "${payload}"
-            echo -e "---------------------------------"
+            if has_json "$@"; then
+                data=$(printf '{"username":"%s","password":"%s","expiry":"%s","max_logins":"%s","ssh_host":"%s","ssh_port":443,"udpgw_port":%s,"sni":"%s","protocol":"SSH-TLS-Payload","payload":"%s"}' \
+                    "$u_name" "$u_pass" "$exp_date" "$u_limit" "$DOMAIN" "$BADVPN_PORT" "$DOMAIN" "$payload")
+                json_success "add" "$data"
+            else
+                echo -e "\n${GREEN}=== HTTP CUSTOM CONFIG ===${NC}"
+                echo -e "Protocol    : SSH-TLS-Payload"
+                echo -e "Remarks     : ${u_name}"
+                echo -e "SSH Host    : ${DOMAIN}"
+                echo -e "SSH Port    : 443"
+                echo -e "UDPGW Port  : ${BADVPN_PORT}"
+                echo -e "SSH Username: ${u_name}"
+                echo -e "SSH Password: ${u_pass}"
+                echo -e "Expiry      : ${exp_date}"
+                echo -e "Max Logins  : ${u_limit}"
+                echo -e "SNI         : ${DOMAIN}"
+                echo -e "---------------------------------"
+                echo -e "PAYLOAD:"
+                echo -e "${payload}"
+                echo -e "---------------------------------"
+            fi
             exit 0
             ;;
         /del|del)
             u_del="$2"
             if [[ -z "$u_del" ]]; then
-                echo -e "${RED}Usage: iranux /del <username>${NC}"
-                exit 1
+                has_json "$@" && json_error "del" 5 "Invalid parameter: username required" || \
+                    echo -e "${RED}Usage: iranux /del <username>${NC}"
+                exit 5
             fi
             if id "$u_del" &>/dev/null; then
                 userdel -r "$u_del" 2>/dev/null
                 sed -i "/^$u_del/d" /etc/security/limits.conf
-                echo -e "${GREEN}[+] User '$u_del' deleted.${NC}"
+                if has_json "$@"; then
+                    data=$(printf '{"username":"%s","message":"User deleted successfully"}' "$u_del")
+                    json_success "del" "$data"
+                else
+                    echo -e "${GREEN}[+] User '$u_del' deleted.${NC}"
+                fi
             else
-                echo -e "${RED}[!] User '$u_del' not found.${NC}"
-                exit 1
+                has_json "$@" && json_error "del" 4 "User not found" || \
+                    echo -e "${RED}[!] User '$u_del' not found.${NC}"
+                exit 4
             fi
             exit 0
             ;;
         /list|list)
-            echo -e "${GREEN}=== System Users ===${NC}"
-            awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd
+            if has_json "$@"; then
+                users_json=""
+                total=0
+                while IFS=: read -r uname _ uid _; do
+                    if [[ "$uid" -ge 1000 && "$uname" != "nobody" ]]; then
+                        u_expiry=$(chage -l "$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
+                        u_maxlogins=$(grep "^$uname soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print $4}' || echo "Unlimited")
+                        [[ -n "$users_json" ]] && users_json+=","
+                        users_json+=$(printf '{"username":"%s","expiry":"%s","max_logins":"%s","active":true}' "$uname" "$u_expiry" "$u_maxlogins")
+                        total=$((total + 1))
+                    fi
+                done < /etc/passwd
+                data=$(printf '{"users":[%s],"total":%s}' "$users_json" "$total")
+                json_success "list" "$data"
+            else
+                echo -e "${GREEN}=== System Users ===${NC}"
+                awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd
+            fi
+            exit 0
+            ;;
+        /status|status)
+            PROXY_STATUS=$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
+            BADVPN_STATUS=$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
+            UPTIME=$(uptime -p 2>/dev/null || echo "unknown")
+            if has_json "$@"; then
+                data=$(printf '{"domain":"%s","ssh_port":22,"proxy_port":443,"proxy_status":"%s","udpgw_port":%s,"udpgw_status":"%s","badvpn_status":"%s","uptime":"%s"}' \
+                    "$DOMAIN" "$PROXY_STATUS" "$BADVPN_PORT" "$BADVPN_STATUS" "$BADVPN_STATUS" "$UPTIME")
+                json_success "status" "$data"
+            else
+                echo -e "${CYAN}=== IRANUX STATUS ===${NC}"
+                echo -e "Domain       : ${DOMAIN}"
+                echo -e "SSH Port     : 22"
+                echo -e "Proxy Port   : 443 (${PROXY_STATUS})"
+                echo -e "UDPGW Port   : ${BADVPN_PORT} (${BADVPN_STATUS})"
+                echo -e "Uptime       : ${UPTIME}"
+            fi
+            exit 0
+            ;;
+        /info|info)
+            u_info="$2"
+            if [[ -z "$u_info" ]]; then
+                has_json "$@" && json_error "info" 5 "Invalid parameter: username required" || \
+                    echo -e "${RED}Usage: iranux /info <username>${NC}"
+                exit 5
+            fi
+            if ! id "$u_info" &>/dev/null; then
+                has_json "$@" && json_error "info" 4 "User not found" || \
+                    echo -e "${RED}[!] User '$u_info' not found.${NC}"
+                exit 4
+            fi
+            u_expiry=$(chage -l "$u_info" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
+            u_maxlogins=$(grep "^$u_info soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print $4}' || echo "Unlimited")
+            if has_json "$@"; then
+                data=$(printf '{"username":"%s","expiry":"%s","max_logins":"%s","active":true,"created_at":"unknown"}' \
+                    "$u_info" "$u_expiry" "$u_maxlogins")
+                json_success "info" "$data"
+            else
+                echo -e "${GREEN}=== User Info: $u_info ===${NC}"
+                echo -e "Username   : $u_info"
+                echo -e "Expiry     : $u_expiry"
+                echo -e "Max Logins : $u_maxlogins"
+            fi
+            exit 0
+            ;;
+        --schema)
+            cat << 'SCHEMA'
+{
+  "protocol": "iranux-json-rpc",
+  "version": "1.0.0",
+  "commands": {
+    "add":    { "cli": "iranux /add {username} {password} {days} {max_logins} --json" },
+    "del":    { "cli": "iranux /del {username} --json" },
+    "list":   { "cli": "iranux /list --json" },
+    "status": { "cli": "iranux /status --json" },
+    "info":   { "cli": "iranux /info {username} --json" }
+  },
+  "error_codes": {
+    "1": "General error", "2": "Permission denied", "3": "User already exists",
+    "4": "User not found", "5": "Invalid parameter", "6": "System error", "7": "Service not running"
+  },
+  "meta": { "schema_command": "iranux --schema", "json_flag": "--json" }
+}
+SCHEMA
             exit 0
             ;;
         /help|help|--help|-h)
             echo -e "${CYAN}=== IRANUX CLI HELP ===${NC}"
             echo -e ""
             echo -e "${GREEN}USAGE:${NC}"
-            echo -e "  iranux                          Open interactive menu"
-            echo -e "  iranux /add <u> <p> [days] [lim] Create user non-interactively"
-            echo -e "  iranux /del <username>          Delete user non-interactively"
-            echo -e "  iranux /list                    List all users"
-            echo -e "  iranux /help                    Show this help"
+            echo -e "  iranux                                Open interactive menu"
+            echo -e "  iranux /add <u> <p> [days] [lim]     Create user non-interactively"
+            echo -e "  iranux /del <username>                Delete user non-interactively"
+            echo -e "  iranux /list                          List all users"
+            echo -e "  iranux /status                        Show service status"
+            echo -e "  iranux /info <username>               Show user info"
+            echo -e "  iranux --schema                       Print JSON-RPC schema"
+            echo -e "  iranux /help                          Show this help"
+            echo -e ""
+            echo -e "${GREEN}FLAGS:${NC}"
+            echo -e "  --json                                Output in JSON format"
             echo -e ""
             echo -e "${GREEN}EXAMPLES:${NC}"
-            echo -e "  iranux /add ali P@ss123 30 2    Create user 'ali', 30 days, max 2 logins"
-            echo -e "  iranux /add bob secret          Create user 'bob' with no expiry/limit"
-            echo -e "  iranux /del ali                 Delete user 'ali'"
-            echo -e "  iranux /list                    Show all users"
+            echo -e "  iranux /add ali P@ss123 30 2          Create user 'ali', 30 days, max 2 logins"
+            echo -e "  iranux /add bob secret                Create user 'bob' with no expiry/limit"
+            echo -e "  iranux /del ali                       Delete user 'ali'"
+            echo -e "  iranux /list                          Show all users"
+            echo -e "  iranux /list --json                   Show all users in JSON format"
+            echo -e "  iranux /status --json                 Show service status in JSON format"
+            echo -e "  iranux /info ali --json               Show user info in JSON format"
             exit 0
             ;;
         *)
