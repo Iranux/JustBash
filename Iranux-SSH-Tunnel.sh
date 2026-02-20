@@ -251,6 +251,12 @@ DOMAIN="${DOMAIN}"
 SECRET_PATH="${SECRET_PATH}"
 BADVPN="${BADVPN_PORT}"
 
+_shutdown() {
+    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Bot shutting down..."
+    exit 0
+}
+trap '_shutdown' SIGTERM SIGINT
+
 send_msg() {
     local text="\$1"
     local json
@@ -274,19 +280,30 @@ send_msg "🚀 <b>Iranux Server Online!</b>
 Type /menu to start."
 
 last_id=0
+_err_count=0
 while true; do
     updates=\$(curl -s --max-time 50 "https://api.telegram.org/bot\$BOT_TOKEN/getUpdates?offset=\$((last_id + 1))&timeout=40")
-    if [[ -z "\$updates" ]]; then sleep 5; continue; fi
-    result_count=\$(echo "\$updates" | jq -r '.result | length')
-    if [[ "\$result_count" == "0" ]]; then sleep 2; continue; fi
+    _curl_exit=\$?
+    if [[ \$_curl_exit -ne 0 || -z "\$updates" ]]; then
+        _err_count=\$((_err_count + 1))
+        _delay=\$((2 ** _err_count > 60 ? 60 : 2 ** _err_count))
+        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [WARN] curl failed (attempt \$_err_count), retrying in \${_delay}s..."
+        sleep "\$_delay"
+        continue
+    fi
+    _err_count=0
+    result_count=\$(echo "\$updates" | jq -r '.result | length' 2>/dev/null) || { sleep 2; continue; }
+    if [[ -z "\$result_count" || "\$result_count" == "0" ]]; then sleep 2; continue; fi
 
-    msg=\$(echo "\$updates" | jq -r '.result[-1].message.text // empty')
-    update_id=\$(echo "\$updates" | jq -r '.result[-1].update_id // empty')
-    chat_id=\$(echo "\$updates" | jq -r '.result[-1].message.chat.id // empty')
-
-    if [[ "\$chat_id" == "\$ADMIN_ID" && -n "\$update_id" && "\$update_id" != "\$last_id" ]]; then
+    for i in \$(seq 0 \$((result_count - 1))); do
+        update_id=\$(echo "\$updates" | jq -r ".result[\$i].update_id // empty" 2>/dev/null) || continue
+        chat_id=\$(echo "\$updates" | jq -r ".result[\$i].message.chat.id // empty" 2>/dev/null) || continue
+        msg=\$(echo "\$updates" | jq -r ".result[\$i].message.text // empty" 2>/dev/null) || continue
+        [[ -z "\$update_id" ]] && continue
         last_id=\$update_id
-        
+
+        if [[ "\$chat_id" != "\$ADMIN_ID" || -z "\$msg" ]]; then continue; fi
+
         if [[ "\$msg" == "/menu" || "\$msg" == "/start" || "\$msg" == "/help" ]]; then
             help_text="🔰 <b>Iranux Manager</b>
 
@@ -400,7 +417,7 @@ Max Logins: <code>\$u_lim</code>"
                 send_msg "\$info_text"
             fi
         fi
-    fi
+    done
     sleep 1
 done
 EOF
