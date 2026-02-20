@@ -841,7 +841,8 @@ systemctl enable iranux-bot --now
 sleep 2
 if lsof -i :443 > /dev/null; then PROXY_STATUS="${GREEN}ONLINE${RESET}"; else PROXY_STATUS="${RED}ERROR${RESET}"; fi
 if lsof -i :7300 > /dev/null; then BADVPN_STATUS="${GREEN}ONLINE${RESET}"; else BADVPN_STATUS="${RED}ERROR${RESET}"; fi
-
+# ── At the end of installation, BEFORE the while true menu loop ── Installation Flag for Installation App
+echo '#@INSTALL_COMPLETE'
 # ------------------------------------------------------------------------------
 # PHASE 9: FULL INSTALLATION REPORT
 # ------------------------------------------------------------------------------
