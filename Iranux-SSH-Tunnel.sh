@@ -205,6 +205,8 @@ echo "DOMAIN=${DOMAIN}" > ${CONFIG_FILE}
 echo "SECRET_PATH=${SECRET_PATH}" >> ${CONFIG_FILE}
 echo "SSH_PORT=${FIXED_SSH_PORT}" >> ${CONFIG_FILE}
 echo "BADVPN_PORT=${BADVPN_PORT}" >> ${CONFIG_FILE}
+echo "BOT_TOKEN=${BOT_TOKEN}" >> ${CONFIG_FILE}
+echo "ADMIN_ID=${ADMIN_ID}" >> ${CONFIG_FILE}
 
 echo -e "${CYAN}[i] Generating SSL Certificate for ${DOMAIN}...${RESET}"
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
@@ -242,15 +244,11 @@ EOF
 # ------------------------------------------------------------------------------
 # PHASE 6: TELEGRAM BOT
 # ------------------------------------------------------------------------------
-cat << 'BOTEOF' > ${APP_DIR}/bot.sh
+cat << 'BOTEOF' > ${APP_DIR}/iranux-bot.sh
 #!/bin/bash
 exec >> /opt/iranux-tunnel/logs/bot.log 2>&1
 
-BOT_TOKEN="__BOT_TOKEN__"
-ADMIN_ID="__ADMIN_ID__"
-DOMAIN="__DOMAIN__"
-SECRET_PATH="__SECRET_PATH__"
-BADVPN_PORT="__BADVPN_PORT__"
+source /opt/iranux-tunnel/config.env
 
 API_BASE="https://api.telegram.org/bot${BOT_TOKEN}"
 STATE_DIR="/opt/iranux-tunnel/state"
@@ -321,13 +319,28 @@ tg_edit_msg() {
     tg_api_call "editMessageText" "${data}" >> /opt/iranux-tunnel/logs/bot.log 2>&1
 }
 
+tg_send_document() {
+    local chat_id="$1"
+    local file_path="$2"
+    local caption="$3"
+    curl -s -F "chat_id=${chat_id}" \
+        -F "document=@${file_path}" \
+        -F "caption=${caption}" \
+        -F "parse_mode=HTML" \
+        "${API_BASE}/sendDocument" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+}
+
 # --- Main menu ---
 show_menu() {
     local chat_id="$1"
     local keyboard='[
-        [{"text":"👤 ADD USER","callback_data":"_adduser"},{"text":"🗑 DEL USER","callback_data":"_deluser"}],
-        [{"text":"📋 LIST USERS","callback_data":"_listusers"},{"text":"📊 SERVER STATUS","callback_data":"_status"}],
-        [{"text":"ℹ️ USER INFO","callback_data":"_userinfo"},{"text":"❓ HELP","callback_data":"_help"}]
+        [{"text":"👤 Add User","callback_data":"_adduser"},{"text":"🗑 Del User","callback_data":"_deluser"}],
+        [{"text":"📋 List Users","callback_data":"_listusers"},{"text":"👥 Online Users","callback_data":"_online"}],
+        [{"text":"ℹ️ User Info","callback_data":"_userinfo"},{"text":"📊 Server Status","callback_data":"_status"}],
+        [{"text":"🔑 Change Pass","callback_data":"_changepass"},{"text":"🔢 Change Limit","callback_data":"_changelimit"}],
+        [{"text":"📅 Change Expiry","callback_data":"_changeexpiry"},{"text":"🧹 Remove Expired","callback_data":"_removeexpired"}],
+        [{"text":"💾 Backup","callback_data":"_backup"},{"text":"⚡ Speed Test","callback_data":"_speedtest"}],
+        [{"text":"❓ Help","callback_data":"_help"}]
     ]'
     tg_send_msg_keyboard "${chat_id}" "🔰 <b>Iranux Manager</b>
 Select an option:" "${keyboard}"
@@ -376,6 +389,20 @@ ${user_list}"
     fi
 }
 
+handle_online() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Checking online users..."
+    local online_list
+    online_list=$(who | grep pts | awk '{print "• <code>"$1"</code> ("$2")"}')
+    if [[ -z "${online_list}" ]]; then
+        tg_send_msg "${chat_id}" "👥 No users currently connected."
+    else
+        tg_send_msg "${chat_id}" "👥 <b>Online Users:</b>
+${online_list}"
+    fi
+}
+
 handle_status() {
     local chat_id="$1"
     local callback_id="$2"
@@ -411,6 +438,120 @@ handle_userinfo() {
 Enter the <b>username</b> to look up:"
 }
 
+handle_changepass() {
+    local chat_id="$1"
+    local callback_id="$2"
+    tg_answer_callback "${callback_id}" "Change Password"
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return
+    rm -f "${STATE_DIR}/state.${chat_id}" "${STATE_DIR}/data.${chat_id}"
+    echo "changepass_username" > "${STATE_DIR}/state.${chat_id}"
+    tg_send_force_reply "${chat_id}" "🔑 <b>Change Password</b>
+Enter the <b>username</b>:"
+}
+
+handle_changelimit() {
+    local chat_id="$1"
+    local callback_id="$2"
+    tg_answer_callback "${callback_id}" "Change Limit"
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return
+    rm -f "${STATE_DIR}/state.${chat_id}" "${STATE_DIR}/data.${chat_id}"
+    echo "changelimit_username" > "${STATE_DIR}/state.${chat_id}"
+    tg_send_force_reply "${chat_id}" "🔢 <b>Change Max Logins</b>
+Enter the <b>username</b>:"
+}
+
+handle_changeexpiry() {
+    local chat_id="$1"
+    local callback_id="$2"
+    tg_answer_callback "${callback_id}" "Change Expiry"
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return
+    rm -f "${STATE_DIR}/state.${chat_id}" "${STATE_DIR}/data.${chat_id}"
+    echo "changeexpiry_username" > "${STATE_DIR}/state.${chat_id}"
+    tg_send_force_reply "${chat_id}" "📅 <b>Change Expiry</b>
+Enter the <b>username</b>:"
+}
+
+handle_removeexpired() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Removing expired users..."
+    local removed=0
+    local removed_list=""
+    while IFS=: read -r uname _ uid _; do
+        if [[ "$uid" -ge 1000 && "$uname" != "nobody" ]]; then
+            local u_exp
+            u_exp=$(chage -l "$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs)
+            if [[ -n "$u_exp" && "$u_exp" != "never" && "$u_exp" != "Never" ]]; then
+                local exp_ts now_ts
+                exp_ts=$(date -d "$u_exp" +%s 2>/dev/null || echo 0)
+                now_ts=$(date +%s)
+                if [[ "$exp_ts" -gt 0 && "$exp_ts" -lt "$now_ts" ]]; then
+                    userdel -r "$uname" 2>/dev/null
+                    sed -i "/^${uname}[[:space:]]\+soft[[:space:]]\+maxlogins/d" /etc/security/limits.conf
+                    removed=$((removed + 1))
+                    removed_list="${removed_list}• <code>${uname}</code>
+"
+                fi
+            fi
+        fi
+    done < /etc/passwd
+    if [[ "${removed}" -eq 0 ]]; then
+        tg_send_msg "${chat_id}" "🧹 No expired users found."
+    else
+        tg_send_msg "${chat_id}" "🧹 <b>Removed ${removed} expired user(s):</b>
+${removed_list}"
+    fi
+}
+
+handle_backup() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Creating backup..."
+    local backup_file="/tmp/iranux-backup-$(date +%Y%m%d%H%M%S).txt"
+    {
+        echo "# Iranux SSH Tunnel Backup - $(date)"
+        echo "# Domain: ${DOMAIN}"
+        echo ""
+        echo "# Users:"
+        while IFS=: read -r uname _ uid _; do
+            if [[ "$uid" -ge 1000 && "$uname" != "nobody" ]]; then
+                local u_exp u_limit
+                u_exp=$(chage -l "$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
+                u_limit=$(grep "^$uname soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print $4}' || echo "Unlimited")
+                echo "  ${uname} | Expiry: ${u_exp} | Max Logins: ${u_limit}"
+            fi
+        done < /etc/passwd
+    } > "${backup_file}"
+    tg_send_document "${chat_id}" "${backup_file}" "💾 Iranux Backup - $(date +%Y-%m-%d)"
+    rm -f "${backup_file}"
+}
+
+handle_speedtest() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Running speed test..."
+    tg_send_msg "${chat_id}" "⚡ Running speed test, please wait..."
+    local result
+    if command -v speedtest-cli >/dev/null 2>&1; then
+        if ! result=$(speedtest-cli --simple 2>&1 | head -5) || [[ -z "${result}" ]]; then
+            result="Speed test failed"
+        fi
+    elif command -v speedtest >/dev/null 2>&1; then
+        if ! result=$(speedtest 2>&1 | grep -E "Download|Upload|Ping" | head -5) || [[ -z "${result}" ]]; then
+            result="Speed test failed"
+        fi
+    else
+        local dl_speed
+        dl_speed=$(curl -s --max-time 15 -o /dev/null -w "%{speed_download}" \
+            "http://speedtest.tele2.net/10MB.zip" 2>/dev/null || echo "0")
+        local dl_mbps
+        dl_mbps=$(awk "BEGIN {printf \"%.2f\", ${dl_speed}/125000}" 2>/dev/null || echo "N/A")
+        result="Download: ~${dl_mbps} Mbps (approximate)"
+    fi
+    tg_send_msg "${chat_id}" "⚡ <b>Speed Test Result:</b>
+<code>${result}</code>"
+}
+
 handle_help() {
     local chat_id="$1"
     local callback_id="$2"
@@ -419,11 +560,18 @@ handle_help() {
 Use the menu buttons to manage SSH users.
 
 <b>Available actions:</b>
-• <b>ADD USER</b> — Create a new SSH user
-• <b>DEL USER</b> — Delete an existing SSH user
-• <b>LIST USERS</b> — Show all SSH users
-• <b>SERVER STATUS</b> — Show server status
-• <b>USER INFO</b> — Show details of a specific user
+• <b>Add User</b> — Create a new SSH user
+• <b>Del User</b> — Delete an existing SSH user
+• <b>List Users</b> — Show all SSH users
+• <b>Online Users</b> — Show currently connected users
+• <b>User Info</b> — Show details of a specific user
+• <b>Server Status</b> — Show server status
+• <b>Change Pass</b> — Change a user's password
+• <b>Change Limit</b> — Modify max logins for a user
+• <b>Change Expiry</b> — Modify expiry date for a user
+• <b>Remove Expired</b> — Clean up expired accounts
+• <b>Backup</b> — Create and send user backup
+• <b>Speed Test</b> — Run server speed test
 
 Send /menu to open the menu at any time."
 }
@@ -527,6 +675,73 @@ Max Logins: <code>${max_logins}</code>"
                 tg_send_msg "${chat_id}" "❌ ${errmsg}"
             fi
             ;;
+        changepass_username)
+            echo "${text}" > "${data_file}"
+            echo "changepass_password" > "${state_file}"
+            tg_send_force_reply "${chat_id}" "🔑 Enter the <b>new password</b> for user <code>${text}</code>:"
+            ;;
+        changepass_password)
+            local cp_user
+            cp_user=$(cat "${data_file}")
+            rm -f "${state_file}" "${data_file}"
+            if ! id "${cp_user}" &>/dev/null; then
+                tg_send_msg "${chat_id}" "❌ User <code>${cp_user}</code> not found."
+            elif echo "${cp_user}:${text}" | chpasswd 2>/dev/null; then
+                tg_send_msg "${chat_id}" "✅ Password changed for <code>${cp_user}</code>."
+            else
+                tg_send_msg "${chat_id}" "❌ Failed to change password for <code>${cp_user}</code>."
+            fi
+            ;;
+        changelimit_username)
+            echo "${text}" > "${data_file}"
+            echo "changelimit_value" > "${state_file}"
+            tg_send_force_reply "${chat_id}" "🔢 Enter the <b>new max logins</b> for user <code>${text}</code> (or <code>0</code> for unlimited):"
+            ;;
+        changelimit_value)
+            local cl_user
+            cl_user=$(cat "${data_file}")
+            rm -f "${state_file}" "${data_file}"
+            if ! id "${cl_user}" &>/dev/null; then
+                tg_send_msg "${chat_id}" "❌ User <code>${cl_user}</code> not found."
+            else
+                sed -i "/^${cl_user}[[:space:]]\+soft[[:space:]]\+maxlogins/d" /etc/security/limits.conf
+                if [[ "${text}" != "0" && -n "${text}" ]]; then
+                    echo "${cl_user} soft maxlogins ${text}" >> /etc/security/limits.conf
+                    tg_send_msg "${chat_id}" "✅ Max logins for <code>${cl_user}</code> set to <code>${text}</code>."
+                else
+                    tg_send_msg "${chat_id}" "✅ Max logins for <code>${cl_user}</code> set to unlimited."
+                fi
+            fi
+            ;;
+        changeexpiry_username)
+            echo "${text}" > "${data_file}"
+            echo "changeexpiry_days" > "${state_file}"
+            tg_send_force_reply "${chat_id}" "📅 Enter <b>new expiry days</b> for user <code>${text}</code> (or <code>0</code> to remove expiry):"
+            ;;
+        changeexpiry_days)
+            local ce_user
+            ce_user=$(cat "${data_file}")
+            rm -f "${state_file}" "${data_file}"
+            if ! id "${ce_user}" &>/dev/null; then
+                tg_send_msg "${chat_id}" "❌ User <code>${ce_user}</code> not found."
+            else
+                if [[ "${text}" == "0" || -z "${text}" ]]; then
+                    chage -E -1 "${ce_user}" 2>/dev/null
+                    tg_send_msg "${chat_id}" "✅ Expiry removed for <code>${ce_user}</code> (no expiry)."
+                elif [[ ! "${text}" =~ ^[0-9]+$ ]]; then
+                    tg_send_msg "${chat_id}" "❌ Invalid input: please enter a number of days."
+                else
+                    local new_exp
+                    new_exp=$(date -d "+${text} days" +%Y-%m-%d 2>/dev/null)
+                    if [[ -z "${new_exp}" ]]; then
+                        tg_send_msg "${chat_id}" "❌ Invalid number of days: <code>${text}</code>."
+                    else
+                        chage -E "${new_exp}" "${ce_user}" 2>/dev/null
+                        tg_send_msg "${chat_id}" "✅ Expiry for <code>${ce_user}</code> set to <code>${new_exp}</code>."
+                    fi
+                fi
+            fi
+            ;;
         *)
             rm -f "${state_file}" "${data_file}"
             return 1
@@ -553,13 +768,20 @@ process_update() {
         fi
 
         case "${cb_data}" in
-            _adduser)   handle_adduser   "${chat_id}" "${cb_id}" ;;
-            _deluser)   handle_deluser   "${chat_id}" "${cb_id}" ;;
-            _listusers) handle_listusers "${chat_id}" "${cb_id}" ;;
-            _status)    handle_status    "${chat_id}" "${cb_id}" ;;
-            _userinfo)  handle_userinfo  "${chat_id}" "${cb_id}" ;;
-            _help)      handle_help      "${chat_id}" "${cb_id}" ;;
-            *)          tg_answer_callback "${cb_id}" "" ;;
+            _adduser)       handle_adduser       "${chat_id}" "${cb_id}" ;;
+            _deluser)       handle_deluser       "${chat_id}" "${cb_id}" ;;
+            _listusers)     handle_listusers     "${chat_id}" "${cb_id}" ;;
+            _online)        handle_online        "${chat_id}" "${cb_id}" ;;
+            _status)        handle_status        "${chat_id}" "${cb_id}" ;;
+            _userinfo)      handle_userinfo      "${chat_id}" "${cb_id}" ;;
+            _changepass)    handle_changepass    "${chat_id}" "${cb_id}" ;;
+            _changelimit)   handle_changelimit   "${chat_id}" "${cb_id}" ;;
+            _changeexpiry)  handle_changeexpiry  "${chat_id}" "${cb_id}" ;;
+            _removeexpired) handle_removeexpired "${chat_id}" "${cb_id}" ;;
+            _backup)        handle_backup        "${chat_id}" "${cb_id}" ;;
+            _speedtest)     handle_speedtest     "${chat_id}" "${cb_id}" ;;
+            _help)          handle_help          "${chat_id}" "${cb_id}" ;;
+            *)              tg_answer_callback "${cb_id}" "" ;;
         esac
         return
     fi
@@ -675,6 +897,10 @@ Max Logins: <code>${max_logins}</code>"
 
 # --- Startup validation ---
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Starting Iranux Telegram Bot..."
+if [[ -z "${BOT_TOKEN}" || -z "${ADMIN_ID}" ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] BOT_TOKEN or ADMIN_ID not set in config.env"
+    exit 1
+fi
 test_resp=$(curl -s --max-time 10 "${API_BASE}/getMe")
 if ! echo "${test_resp}" | jq -e '.ok == true' > /dev/null 2>&1; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] Invalid BOT_TOKEN or Telegram unreachable. Response: ${test_resp}"
@@ -728,13 +954,7 @@ while true; do
 done
 BOTEOF
 
-# Inject runtime values into bot.sh via sed replacements
-sed -i "s|__BOT_TOKEN__|${BOT_TOKEN}|g"   "${APP_DIR}/bot.sh"
-sed -i "s|__ADMIN_ID__|${ADMIN_ID}|g"     "${APP_DIR}/bot.sh"
-sed -i "s|__DOMAIN__|${DOMAIN}|g"         "${APP_DIR}/bot.sh"
-sed -i "s|__SECRET_PATH__|${SECRET_PATH}|g" "${APP_DIR}/bot.sh"
-sed -i "s|__BADVPN_PORT__|${BADVPN_PORT}|g" "${APP_DIR}/bot.sh"
-chmod +x ${APP_DIR}/bot.sh
+chmod +x ${APP_DIR}/iranux-bot.sh
 
 # ------------------------------------------------------------------------------
 # PHASE 7: CLI MENU
@@ -1164,7 +1384,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${APP_DIR}
-ExecStart=/bin/bash ${APP_DIR}/bot.sh
+ExecStart=/bin/bash ${APP_DIR}/iranux-bot.sh
 Restart=always
 RestartSec=5
 [Install]
