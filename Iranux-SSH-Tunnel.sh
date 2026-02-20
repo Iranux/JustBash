@@ -242,185 +242,498 @@ EOF
 # ------------------------------------------------------------------------------
 # PHASE 6: TELEGRAM BOT
 # ------------------------------------------------------------------------------
-cat << EOF > ${APP_DIR}/bot.sh
+cat << 'BOTEOF' > ${APP_DIR}/bot.sh
 #!/bin/bash
 exec >> /opt/iranux-tunnel/logs/bot.log 2>&1
-BOT_TOKEN="${BOT_TOKEN}"
-ADMIN_ID="${ADMIN_ID}"
-DOMAIN="${DOMAIN}"
-SECRET_PATH="${SECRET_PATH}"
-BADVPN="${BADVPN_PORT}"
 
+BOT_TOKEN="__BOT_TOKEN__"
+ADMIN_ID="__ADMIN_ID__"
+DOMAIN="__DOMAIN__"
+SECRET_PATH="__SECRET_PATH__"
+BADVPN_PORT="__BADVPN_PORT__"
+
+API_BASE="https://api.telegram.org/bot${BOT_TOKEN}"
+STATE_DIR="/opt/iranux-tunnel/state"
+mkdir -p "${STATE_DIR}"
+chmod 700 "${STATE_DIR}"
+
+# --- Signal handling ---
 _shutdown() {
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Bot shutting down..."
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Bot shutting down..."
+    tg_send_msg "${ADMIN_ID}" "🔴 <b>Iranux Bot is shutting down.</b>"
     exit 0
 }
 trap '_shutdown' SIGTERM SIGINT
 
-send_msg() {
-    local text="\$1"
-    local json
-    json=\$(jq -n --arg chat "\$ADMIN_ID" --arg txt "\$text" \
-        '{chat_id: \$chat, text: \$txt, parse_mode: "HTML"}')
-    curl -s -X POST "https://api.telegram.org/bot\$BOT_TOKEN/sendMessage" \
+# --- Telegram API wrapper functions ---
+tg_api_call() {
+    local method="$1"
+    local data="$2"
+    curl -s -X POST "${API_BASE}/${method}" \
         -H "Content-Type: application/json" \
-        -d "\$json" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+        -d "${data}"
 }
 
-# Validate bot token
-test_resp=\$(curl -s "https://api.telegram.org/bot\$BOT_TOKEN/getMe")
-if ! echo "\$test_resp" | grep -q '"ok":true'; then
-    echo "[ERROR] Invalid BOT_TOKEN or Telegram unreachable. Response: \$test_resp"
-    exit 1
-fi
-echo "[INFO] Bot token validated. Starting polling..."
+tg_send_msg() {
+    local chat_id="$1"
+    local text="$2"
+    local data
+    data=$(jq -n --arg c "${chat_id}" --arg t "${text}" \
+        '{chat_id: $c, text: $t, parse_mode: "HTML"}')
+    tg_api_call "sendMessage" "${data}" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+}
 
-send_msg "🚀 <b>Iranux Server Online!</b>
-------------------
-Type /menu to start."
+tg_send_msg_keyboard() {
+    local chat_id="$1"
+    local text="$2"
+    local keyboard="$3"
+    local data
+    data=$(jq -n --arg c "${chat_id}" --arg t "${text}" --argjson k "${keyboard}" \
+        '{chat_id: $c, text: $t, parse_mode: "HTML", reply_markup: {inline_keyboard: $k}}')
+    tg_api_call "sendMessage" "${data}" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+}
 
-last_id=0
-_err_count=0
-while true; do
-    updates=\$(curl -s --max-time 50 "https://api.telegram.org/bot\$BOT_TOKEN/getUpdates?offset=\$((last_id + 1))&timeout=40")
-    _curl_exit=\$?
-    if [[ \$_curl_exit -ne 0 || -z "\$updates" ]]; then
-        _err_count=\$((_err_count + 1))
-        _delay=\$((2 ** _err_count > 60 ? 60 : 2 ** _err_count))
-        echo "[\$(date '+%Y-%m-%d %H:%M:%S')] [WARN] curl failed (attempt \$_err_count), retrying in \${_delay}s..."
-        sleep "\$_delay"
-        continue
+tg_send_force_reply() {
+    local chat_id="$1"
+    local text="$2"
+    local data
+    data=$(jq -n --arg c "${chat_id}" --arg t "${text}" \
+        '{chat_id: $c, text: $t, parse_mode: "HTML", reply_markup: {force_reply: true, selective: true}}')
+    tg_api_call "sendMessage" "${data}" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+}
+
+tg_answer_callback() {
+    local callback_id="$1"
+    local text="$2"
+    local data
+    data=$(jq -n --arg i "${callback_id}" --arg t "${text}" \
+        '{callback_query_id: $i, text: $t}')
+    tg_api_call "answerCallbackQuery" "${data}" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+}
+
+tg_edit_msg() {
+    local chat_id="$1"
+    local msg_id="$2"
+    local text="$3"
+    local data
+    data=$(jq -n --arg c "${chat_id}" --arg m "${msg_id}" --arg t "${text}" \
+        '{chat_id: $c, message_id: ($m|tonumber), text: $t, parse_mode: "HTML"}')
+    tg_api_call "editMessageText" "${data}" >> /opt/iranux-tunnel/logs/bot.log 2>&1
+}
+
+# --- Main menu ---
+show_menu() {
+    local chat_id="$1"
+    local keyboard='[
+        [{"text":"👤 ADD USER","callback_data":"_adduser"},{"text":"🗑 DEL USER","callback_data":"_deluser"}],
+        [{"text":"📋 LIST USERS","callback_data":"_listusers"},{"text":"📊 SERVER STATUS","callback_data":"_status"}],
+        [{"text":"ℹ️ USER INFO","callback_data":"_userinfo"},{"text":"❓ HELP","callback_data":"_help"}]
+    ]'
+    tg_send_msg_keyboard "${chat_id}" "🔰 <b>Iranux Manager</b>
+Select an option:" "${keyboard}"
+}
+
+# --- Callback handlers ---
+handle_adduser() {
+    local chat_id="$1"
+    local callback_id="$2"
+    tg_answer_callback "${callback_id}" "Add User"
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return
+    rm -f "${STATE_DIR}/state.${chat_id}" "${STATE_DIR}/data.${chat_id}"
+    echo "adduser_username" > "${STATE_DIR}/state.${chat_id}"
+    tg_send_force_reply "${chat_id}" "👤 <b>Add User</b>
+Enter the <b>username</b> for the new user:"
+}
+
+handle_deluser() {
+    local chat_id="$1"
+    local callback_id="$2"
+    tg_answer_callback "${callback_id}" "Delete User"
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return
+    rm -f "${STATE_DIR}/state.${chat_id}" "${STATE_DIR}/data.${chat_id}"
+    echo "deluser_username" > "${STATE_DIR}/state.${chat_id}"
+    tg_send_force_reply "${chat_id}" "🗑 <b>Delete User</b>
+Enter the <b>username</b> to delete:"
+}
+
+handle_listusers() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Listing users..."
+    local result
+    result=$(iranux /list --json 2>/dev/null)
+    local user_list=""
+    if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+        user_list=$(echo "${result}" | jq -r \
+            '.data.users[] | "• <code>\(.username)</code> | Exp: \(.expiry) | Logins: \(.max_logins)"' \
+            2>/dev/null)
     fi
-    _err_count=0
-    result_count=\$(echo "\$updates" | jq -r '.result | length' 2>/dev/null) || { sleep 2; continue; }
-    if [[ -z "\$result_count" || "\$result_count" == "0" ]]; then sleep 2; continue; fi
+    if [[ -z "${user_list}" ]]; then
+        tg_send_msg "${chat_id}" "📋 No users found."
+    else
+        tg_send_msg "${chat_id}" "📋 <b>User List:</b>
+${user_list}"
+    fi
+}
 
-    for i in \$(seq 0 \$((result_count - 1))); do
-        update_id=\$(echo "\$updates" | jq -r ".result[\$i].update_id // empty" 2>/dev/null) || continue
-        chat_id=\$(echo "\$updates" | jq -r ".result[\$i].message.chat.id // empty" 2>/dev/null) || continue
-        msg=\$(echo "\$updates" | jq -r ".result[\$i].message.text // empty" 2>/dev/null) || continue
-        [[ -z "\$update_id" ]] && continue
-        last_id=\$update_id
+handle_status() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Checking status..."
+    local result
+    result=$(iranux /status --json 2>/dev/null)
+    local proxy_st badvpn_st uptime_val
+    if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+        proxy_st=$(echo "${result}" | jq -r '.data.proxy_status // "unknown"')
+        badvpn_st=$(echo "${result}" | jq -r '.data.badvpn_status // "unknown"')
+        uptime_val=$(echo "${result}" | jq -r '.data.uptime // "unknown"')
+    else
+        proxy_st=$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
+        badvpn_st=$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
+        uptime_val=$(uptime -p 2>/dev/null || echo "unknown")
+    fi
+    tg_send_msg "${chat_id}" "📊 <b>Server Status</b>
+Domain: <code>${DOMAIN}</code>
+SSH Port: <code>22</code>
+Proxy (443): <code>${proxy_st}</code>
+UDPGW (${BADVPN_PORT}): <code>${badvpn_st}</code>
+Uptime: <code>${uptime_val}</code>"
+}
 
-        if [[ "\$chat_id" != "\$ADMIN_ID" || -z "\$msg" ]]; then continue; fi
+handle_userinfo() {
+    local chat_id="$1"
+    local callback_id="$2"
+    tg_answer_callback "${callback_id}" "User Info"
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return
+    rm -f "${STATE_DIR}/state.${chat_id}" "${STATE_DIR}/data.${chat_id}"
+    echo "userinfo_username" > "${STATE_DIR}/state.${chat_id}"
+    tg_send_force_reply "${chat_id}" "ℹ️ <b>User Info</b>
+Enter the <b>username</b> to look up:"
+}
 
-        if [[ "\$msg" == "/menu" || "\$msg" == "/start" || "\$msg" == "/help" ]]; then
-            help_text="🔰 <b>Iranux Manager</b>
+handle_help() {
+    local chat_id="$1"
+    local callback_id="$2"
+    [[ -n "${callback_id}" ]] && tg_answer_callback "${callback_id}" "Help"
+    tg_send_msg "${chat_id}" "❓ <b>Iranux Bot Help</b>
+Use the menu buttons to manage SSH users.
 
-<b>Commands:</b>
-<code>/add user pass [days] [limit]</code> — Create user
-<code>/del user</code> — Delete user
-<code>/list</code> — List all users
-<code>/status</code> — Server status
-<code>/info user</code> — User info
+<b>Available actions:</b>
+• <b>ADD USER</b> — Create a new SSH user
+• <b>DEL USER</b> — Delete an existing SSH user
+• <b>LIST USERS</b> — Show all SSH users
+• <b>SERVER STATUS</b> — Show server status
+• <b>USER INFO</b> — Show details of a specific user
 
-<i>Example: /add ali 1234 30 2</i>"
-            send_msg "\$help_text"
-        
-        elif [[ "\$msg" == /add* ]]; then
-            read -r cmd user pass days limit <<< "\$msg"
-            if [[ -z "\$user" || -z "\$pass" ]]; then
-                send_msg "❌ Error. Use: <code>/add user pass days limit</code>"
-            else
-                if id "\$user" &>/dev/null; then
-                     send_msg "⚠️ User exists."
-                else
-                    if useradd -m -s /bin/false "\$user"; then
-                        echo "\$user:\$pass" | chpasswd
-                        
-                        if [[ -n "\$days" ]]; then
-                            exp_date=\$(date -d "+\$days days" +%Y-%m-%d)
-                            chage -E "\$exp_date" "\$user"
-                        else exp_date="Never"; fi
-                        
-                        if [[ -n "\$limit" ]]; then
-                            sed -i "/^\$user[[:space:]]/d" /etc/security/limits.conf
-                            echo "\$user soft maxlogins \$limit" >> /etc/security/limits.conf
-                        else limit="Unlimited"; fi
+Send /menu to open the menu at any time."
+}
 
-                        payload="GET \$SECRET_PATH HTTP/1.1[crlf]Host: \$DOMAIN[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"
-                        
-                        resp="✅ <b>Iranux Config Created</b>
+# --- Conversation state machine ---
+handle_conversation() {
+    local chat_id="$1"
+    local text="$2"
+    # Validate chat_id is numeric to prevent path traversal
+    [[ ! "${chat_id}" =~ ^-?[0-9]+$ ]] && return 1
+    local state_file="${STATE_DIR}/state.${chat_id}"
+    local data_file="${STATE_DIR}/data.${chat_id}"
+    [[ ! -f "${state_file}" ]] && return 1
+    local state
+    state=$(cat "${state_file}")
+
+    case "${state}" in
+        adduser_username)
+            echo "${text}" > "${data_file}"
+            echo "adduser_password" > "${state_file}"
+            tg_send_force_reply "${chat_id}" "🔑 Enter the <b>password</b> for user <code>${text}</code>:"
+            ;;
+        adduser_password)
+            local username
+            username=$(cat "${data_file}")
+            printf '%s\n%s\n' "${username}" "${text}" > "${data_file}"
+            echo "adduser_days" > "${state_file}"
+            tg_send_force_reply "${chat_id}" "📅 Enter <b>expiry days</b> (e.g. <code>30</code>), or <code>0</code> for no expiry:"
+            ;;
+        adduser_days)
+            local username password
+            username=$(sed -n '1p' "${data_file}")
+            password=$(sed -n '2p' "${data_file}")
+            printf '%s\n%s\n%s\n' "${username}" "${password}" "${text}" > "${data_file}"
+            echo "adduser_limit" > "${state_file}"
+            tg_send_force_reply "${chat_id}" "🔗 Enter <b>max logins</b> (e.g. <code>2</code>), or <code>0</code> for unlimited:"
+            ;;
+        adduser_limit)
+            local username password days limit
+            username=$(sed -n '1p' "${data_file}")
+            password=$(sed -n '2p' "${data_file}")
+            days=$(sed -n '3p' "${data_file}")
+            limit="${text}"
+            rm -f "${state_file}" "${data_file}"
+            [[ "${days}" == "0" ]] && days=""
+            [[ "${limit}" == "0" ]] && limit=""
+            local result
+            result=$(iranux /add "${username}" "${password}" "${days}" "${limit}" --json 2>/dev/null)
+            if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+                local exp max_logins payload
+                exp=$(echo "${result}" | jq -r '.data.expiry // "Never"')
+                max_logins=$(echo "${result}" | jq -r '.data.max_logins // "Unlimited"')
+                payload=$(echo "${result}" | jq -r '.data.payload // ""')
+                tg_send_msg "${chat_id}" "✅ <b>Iranux Config Created</b>
 --------------------------------
 <b>Protocol:</b> <code>SSH-TLS-Payload</code>
-
-<b>Remarks:</b> <code>\$user</code>
-<b>SSH Host:</b> <code>\$DOMAIN</code>
+<b>Remarks:</b> <code>${username}</code>
+<b>SSH Host:</b> <code>${DOMAIN}</code>
 <b>SSH Port:</b> <code>443</code>
-<b>UDPGW Port:</b> <code>\$BADVPN</code>
-<b>SSH Username:</b> <code>\$user</code>
-<b>SSH Password:</b> <code>\$pass</code>
-<b>SNI:</b> <code>\$DOMAIN</code>
+<b>UDPGW Port:</b> <code>${BADVPN_PORT}</code>
+<b>SSH Username:</b> <code>${username}</code>
+<b>SSH Password:</b> <code>${password}</code>
+<b>SNI:</b> <code>${DOMAIN}</code>
+<b>Expiry:</b> <code>${exp}</code>
+<b>Max Logins:</b> <code>${max_logins}</code>
 --------------------------------
 👇 <b>Payload (Copy Exact):</b>
-<code>\$payload</code>"
-                        
-                        send_msg "\$resp"
-                    else
-                        send_msg "❌ System error creating user."
-                    fi
-                fi
-            fi
-
-        elif [[ "\$msg" == /del* ]]; then
-            read -r cmd u_del <<< "\$msg"
-            if [[ -z "\$u_del" ]]; then
-                send_msg "❌ Usage: <code>/del username</code>"
-            elif ! id "\$u_del" &>/dev/null; then
-                send_msg "❌ User <code>\$u_del</code> not found."
+<code>${payload}</code>"
             else
-                userdel -r "\$u_del" 2>/dev/null
-                sed -i "/^\$u_del[[:space:]]/d" /etc/security/limits.conf
-                send_msg "✅ User <code>\$u_del</code> deleted successfully."
+                local errmsg
+                errmsg=$(echo "${result}" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                tg_send_msg "${chat_id}" "❌ Failed to create user: ${errmsg}"
             fi
-
-        elif [[ "\$msg" == "/list" ]]; then
-            user_list=""
-            while IFS=: read -r uname _ uid _; do
-                if [[ "\$uid" -ge 1000 && "\$uname" != "nobody" ]]; then
-                    u_exp=\$(chage -l "\$uname" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
-                    u_lim=\$(grep "^\$uname soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
-                    user_list+="
-• <code>\$uname</code> | Exp: \$u_exp | Logins: \$u_lim"
-                fi
-            done < /etc/passwd
-            if [[ -z "\$user_list" ]]; then
-                send_msg "📋 No users found."
+            ;;
+        deluser_username)
+            rm -f "${state_file}" "${data_file}"
+            local result
+            result=$(iranux /del "${text}" --json 2>/dev/null)
+            if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+                tg_send_msg "${chat_id}" "✅ User <code>${text}</code> deleted successfully."
             else
-                send_msg "📋 <b>User List:</b>\$user_list"
+                local errmsg
+                errmsg=$(echo "${result}" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                tg_send_msg "${chat_id}" "❌ Failed to delete user: ${errmsg}"
             fi
-
-        elif [[ "\$msg" == "/status" ]]; then
-            PROXY_ST=\$(systemctl is-active iranux-tunnel 2>/dev/null || echo "inactive")
-            BADVPN_ST=\$(systemctl is-active badvpn 2>/dev/null || echo "inactive")
-            UPTIME=\$(uptime -p 2>/dev/null || echo "unknown")
-            status_text="📊 <b>Server Status</b>
-Domain: <code>\$DOMAIN</code>
-SSH Port: <code>22</code>
-Proxy (443): <code>\$PROXY_ST</code>
-UDPGW (\$BADVPN): <code>\$BADVPN_ST</code>
-Uptime: <code>\$UPTIME</code>"
-            send_msg "\$status_text"
-
-        elif [[ "\$msg" == /info* ]]; then
-            read -r cmd u_info <<< "\$msg"
-            if [[ -z "\$u_info" ]]; then
-                send_msg "❌ Usage: <code>/info username</code>"
-            elif ! id "\$u_info" &>/dev/null; then
-                send_msg "❌ User <code>\$u_info</code> not found."
+            ;;
+        userinfo_username)
+            rm -f "${state_file}" "${data_file}"
+            local result
+            result=$(iranux /info "${text}" --json 2>/dev/null)
+            if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+                local exp max_logins
+                exp=$(echo "${result}" | jq -r '.data.expiry // "Never"')
+                max_logins=$(echo "${result}" | jq -r '.data.max_logins // "Unlimited"')
+                tg_send_msg "${chat_id}" "ℹ️ <b>User Info: ${text}</b>
+Expiry: <code>${exp}</code>
+Max Logins: <code>${max_logins}</code>"
             else
-                u_exp=\$(chage -l "\$u_info" 2>/dev/null | grep "Account expires" | cut -d: -f2 | xargs || echo "Never")
-                u_lim=\$(grep "^\$u_info soft maxlogins" /etc/security/limits.conf 2>/dev/null | awk '{print \$4}' || echo "Unlimited")
-                info_text="👤 <b>User Info: \$u_info</b>
-Expiry: <code>\$u_exp</code>
-Max Logins: <code>\$u_lim</code>"
-                send_msg "\$info_text"
+                local errmsg
+                errmsg=$(echo "${result}" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                tg_send_msg "${chat_id}" "❌ ${errmsg}"
             fi
+            ;;
+        *)
+            rm -f "${state_file}" "${data_file}"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# --- Process a single update ---
+process_update() {
+    local update="$1"
+
+    # Handle callback_query
+    if echo "${update}" | jq -e '.callback_query' > /dev/null 2>&1; then
+        local cb_id cb_data from_id chat_id
+        cb_id=$(echo "${update}" | jq -r '.callback_query.id')
+        cb_data=$(echo "${update}" | jq -r '.callback_query.data')
+        from_id=$(echo "${update}" | jq -r '.callback_query.from.id')
+        chat_id=$(echo "${update}" | jq -r '.callback_query.message.chat.id')
+
+        if [[ "${from_id}" != "${ADMIN_ID}" ]]; then
+            tg_answer_callback "${cb_id}" "🚫 Access Denied"
+            return
         fi
+
+        case "${cb_data}" in
+            _adduser)   handle_adduser   "${chat_id}" "${cb_id}" ;;
+            _deluser)   handle_deluser   "${chat_id}" "${cb_id}" ;;
+            _listusers) handle_listusers "${chat_id}" "${cb_id}" ;;
+            _status)    handle_status    "${chat_id}" "${cb_id}" ;;
+            _userinfo)  handle_userinfo  "${chat_id}" "${cb_id}" ;;
+            _help)      handle_help      "${chat_id}" "${cb_id}" ;;
+            *)          tg_answer_callback "${cb_id}" "" ;;
+        esac
+        return
+    fi
+
+    # Handle message
+    local chat_id from_id msg_text
+    chat_id=$(echo "${update}" | jq -r '.message.chat.id // empty')
+    from_id=$(echo "${update}" | jq -r '.message.from.id // empty')
+    msg_text=$(echo "${update}" | jq -r '.message.text // empty')
+
+    [[ -z "${chat_id}" || -z "${from_id}" ]] && return
+
+    if [[ "${from_id}" != "${ADMIN_ID}" ]]; then
+        tg_send_msg "${chat_id}" "🚫 ACCESS DENIED 🚫"
+        return
+    fi
+
+    [[ -z "${msg_text}" ]] && return
+
+    # Check for active conversation state first
+    handle_conversation "${chat_id}" "${msg_text}" && return
+
+    # Handle commands
+    case "${msg_text}" in
+        /start|/menu)
+            show_menu "${chat_id}"
+            ;;
+        /help)
+            handle_help "${chat_id}" ""
+            ;;
+        /add*)
+            read -r _ u_name u_pass u_days u_limit <<< "${msg_text}"
+            if [[ -z "${u_name}" || -z "${u_pass}" ]]; then
+                tg_send_msg "${chat_id}" "❌ Usage: <code>/add username password [days] [limit]</code>"
+            else
+                local result
+                result=$(iranux /add "${u_name}" "${u_pass}" "${u_days}" "${u_limit}" --json 2>/dev/null)
+                if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+                    local exp max_logins payload
+                    exp=$(echo "${result}" | jq -r '.data.expiry // "Never"')
+                    max_logins=$(echo "${result}" | jq -r '.data.max_logins // "Unlimited"')
+                    payload=$(echo "${result}" | jq -r '.data.payload // ""')
+                    tg_send_msg "${chat_id}" "✅ <b>Iranux Config Created</b>
+--------------------------------
+<b>Protocol:</b> <code>SSH-TLS-Payload</code>
+<b>Remarks:</b> <code>${u_name}</code>
+<b>SSH Host:</b> <code>${DOMAIN}</code>
+<b>SSH Port:</b> <code>443</code>
+<b>UDPGW Port:</b> <code>${BADVPN_PORT}</code>
+<b>SSH Username:</b> <code>${u_name}</code>
+<b>SSH Password:</b> <code>${u_pass}</code>
+<b>SNI:</b> <code>${DOMAIN}</code>
+<b>Expiry:</b> <code>${exp}</code>
+<b>Max Logins:</b> <code>${max_logins}</code>
+--------------------------------
+👇 <b>Payload (Copy Exact):</b>
+<code>${payload}</code>"
+                else
+                    local errmsg
+                    errmsg=$(echo "${result}" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                    tg_send_msg "${chat_id}" "❌ Failed to create user: ${errmsg}"
+                fi
+            fi
+            ;;
+        /del*)
+            read -r _ u_del <<< "${msg_text}"
+            if [[ -z "${u_del}" ]]; then
+                tg_send_msg "${chat_id}" "❌ Usage: <code>/del username</code>"
+            else
+                local result
+                result=$(iranux /del "${u_del}" --json 2>/dev/null)
+                if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+                    tg_send_msg "${chat_id}" "✅ User <code>${u_del}</code> deleted successfully."
+                else
+                    local errmsg
+                    errmsg=$(echo "${result}" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                    tg_send_msg "${chat_id}" "❌ Failed to delete user: ${errmsg}"
+                fi
+            fi
+            ;;
+        /list)
+            handle_listusers "${chat_id}" ""
+            ;;
+        /status)
+            handle_status "${chat_id}" ""
+            ;;
+        /info*)
+            read -r _ u_info <<< "${msg_text}"
+            if [[ -z "${u_info}" ]]; then
+                tg_send_msg "${chat_id}" "❌ Usage: <code>/info username</code>"
+            else
+                local result
+                result=$(iranux /info "${u_info}" --json 2>/dev/null)
+                if echo "${result}" | jq -e '.status == "success"' > /dev/null 2>&1; then
+                    local exp max_logins
+                    exp=$(echo "${result}" | jq -r '.data.expiry // "Never"')
+                    max_logins=$(echo "${result}" | jq -r '.data.max_logins // "Unlimited"')
+                    tg_send_msg "${chat_id}" "ℹ️ <b>User Info: ${u_info}</b>
+Expiry: <code>${exp}</code>
+Max Logins: <code>${max_logins}</code>"
+                else
+                    local errmsg
+                    errmsg=$(echo "${result}" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                    tg_send_msg "${chat_id}" "❌ ${errmsg}"
+                fi
+            fi
+            ;;
+        *)
+            show_menu "${chat_id}"
+            ;;
+    esac
+}
+
+# --- Startup validation ---
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Starting Iranux Telegram Bot..."
+test_resp=$(curl -s --max-time 10 "${API_BASE}/getMe")
+if ! echo "${test_resp}" | jq -e '.ok == true' > /dev/null 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] Invalid BOT_TOKEN or Telegram unreachable. Response: ${test_resp}"
+    exit 1
+fi
+bot_name=$(echo "${test_resp}" | jq -r '.result.username // "unknown"')
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Bot validated: @${bot_name}"
+
+tg_send_msg "${ADMIN_ID}" "🚀 <b>Iranux Server Online!</b>
+Bot: @${bot_name}
+------------------
+Tap /menu to start."
+
+# --- Main polling loop ---
+last_update_id=0
+err_count=0
+while true; do
+    offset=$((last_update_id + 1))
+    response=$(curl -s --max-time 50 \
+        "${API_BASE}/getUpdates?offset=${offset}&limit=100&timeout=30")
+    curl_exit=$?
+
+    if [[ ${curl_exit} -ne 0 || -z "${response}" ]]; then
+        err_count=$((err_count + 1))
+        delay=$((2 ** err_count > 60 ? 60 : 2 ** err_count))
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] curl failed (attempt ${err_count}), retrying in ${delay}s..."
+        sleep "${delay}"
+        continue
+    fi
+
+    if ! echo "${response}" | jq -e '.ok == true' > /dev/null 2>&1; then
+        err_count=$((err_count + 1))
+        delay=$((2 ** err_count > 60 ? 60 : 2 ** err_count))
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] API error (attempt ${err_count}), retrying in ${delay}s..."
+        sleep "${delay}"
+        continue
+    fi
+    err_count=0
+
+    result_count=$(echo "${response}" | jq '.result | length')
+    [[ -z "${result_count}" || "${result_count}" == "0" ]] && continue
+
+    for i in $(seq 0 $((result_count - 1))); do
+        update=$(echo "${response}" | jq ".result[${i}]")
+        update_id=$(echo "${update}" | jq -r '.update_id')
+        [[ -z "${update_id}" ]] && continue
+        last_update_id=${update_id}
+        ( process_update "${update}" ) &
     done
-    sleep 1
+    wait
 done
-EOF
+BOTEOF
+
+# Inject runtime values into bot.sh via sed replacements
+sed -i "s|__BOT_TOKEN__|${BOT_TOKEN}|g"   "${APP_DIR}/bot.sh"
+sed -i "s|__ADMIN_ID__|${ADMIN_ID}|g"     "${APP_DIR}/bot.sh"
+sed -i "s|__DOMAIN__|${DOMAIN}|g"         "${APP_DIR}/bot.sh"
+sed -i "s|__SECRET_PATH__|${SECRET_PATH}|g" "${APP_DIR}/bot.sh"
+sed -i "s|__BADVPN_PORT__|${BADVPN_PORT}|g" "${APP_DIR}/bot.sh"
 chmod +x ${APP_DIR}/bot.sh
 
 # ------------------------------------------------------------------------------
