@@ -480,13 +480,13 @@ if [[ $# -gt 0 ]]; then
                 echo -e "UDPGW Port  : ${BADVPN_PORT}"
                 echo -e "SSH Username: ${u_name}"
                 echo -e "SSH Password: ${u_pass}"
-                echo -e "Expiry      : ${exp_date}"
-                echo -e "Max Logins  : ${u_limit}"
                 echo -e "SNI         : ${DOMAIN}"
                 echo -e "---------------------------------"
                 echo -e "PAYLOAD:"
                 echo -e "${payload}"
                 echo -e "---------------------------------"
+                echo -e "Expiry      : ${exp_date}"
+                echo -e "Max Logins  : ${u_limit}"
             fi
             exit 0
             ;;
