@@ -1,0 +1,104 @@
+{
+  "protocol": "iranux-json-rpc",
+  "version": "1.0.0",
+  "commands": {
+    "add": {
+      "cli": "iranux /add {username} {password} {days} {max_logins} --json",
+      "success": {
+        "status": "success",
+        "command": "add",
+        "data": {
+          "username": "string",
+          "password": "string",
+          "expiry": "YYYY-MM-DD",
+          "max_logins": "number|string",
+          "ssh_host": "string",
+          "ssh_port": 443,
+          "udpgw_port": "number",
+          "sni": "string",
+          "protocol": "SSH-TLS-Payload",
+          "payload": "string"
+        }
+      }
+    },
+    "del": {
+      "cli": "iranux /del {username} --json",
+      "success": {
+        "status": "success",
+        "command": "del",
+        "data": {
+          "username": "string",
+          "message": "User deleted successfully"
+        }
+      }
+    },
+    "list": {
+      "cli": "iranux /list --json",
+      "success": {
+        "status": "success",
+        "command": "list",
+        "data": {
+          "users": [
+            {
+              "username": "string",
+              "expiry": "YYYY-MM-DD",
+              "max_logins": "number|string",
+              "active": true
+            }
+          ],
+          "total": "number"
+        }
+      }
+    },
+    "status": {
+      "cli": "iranux /status --json",
+      "success": {
+        "status": "success",
+        "command": "status",
+        "data": {
+          "domain": "string",
+          "ssh_port": 22,
+          "proxy_port": 443,
+          "proxy_status": "string",
+          "udpgw_port": "number",
+          "udpgw_status": "string",
+          "badvpn_status": "string",
+          "uptime": "string"
+        }
+      }
+    },
+    "info": {
+      "cli": "iranux /info {username} --json",
+      "success": {
+        "status": "success",
+        "command": "info",
+        "data": {
+          "username": "string",
+          "expiry": "YYYY-MM-DD",
+          "max_logins": "number|string",
+          "active": true,
+          "created_at": "string"
+        }
+      }
+    }
+  },
+  "error_codes": {
+    "1": "General error",
+    "2": "Permission denied",
+    "3": "User already exists",
+    "4": "User not found",
+    "5": "Invalid parameter",
+    "6": "System error",
+    "7": "Service not running"
+  },
+  "error_format": {
+    "status": "error",
+    "command": "string",
+    "code": "number",
+    "message": "string"
+  },
+  "meta": {
+    "schema_command": "iranux --schema",
+    "json_flag": "--json"
+  }
+}
