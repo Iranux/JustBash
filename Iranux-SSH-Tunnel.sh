@@ -86,6 +86,29 @@ fuser -k ${BADVPN_PORT}/udp > /dev/null 2>&1 || true
 systemctl stop nginx apache2 caddy badvpn badvpn-udpgw > /dev/null 2>&1 || true
 systemctl disable nginx apache2 caddy badvpn badvpn-udpgw > /dev/null 2>&1 || true
 
+# Stop Previous Iranux Services
+systemctl stop iranux-proxy iranux-bot > /dev/null 2>&1 || true
+systemctl disable iranux-proxy iranux-bot > /dev/null 2>&1 || true
+rm -f /etc/systemd/system/iranux-proxy.service /etc/systemd/system/iranux-bot.service
+systemctl daemon-reload
+
+# Remove Previous SSH Tunnel Users
+echo -e "${YELLOW}[!] Removing Previous SSH Tunnel Users...${RESET}"
+for user in $(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd); do
+    pkill -u "$user" > /dev/null 2>&1 || true
+    userdel --force "$user" > /dev/null 2>&1 || true
+done
+
+# Clean Previous Installation Data
+echo -e "${YELLOW}[!] Cleaning Previous Installation Data...${RESET}"
+rm -f /root/usuarios.db
+rm -rf /opt/iranux-tunnel
+rm -rf /etc/bot
+rm -rf /etc/SSHPlus
+rm -f /tmp/cad.* /tmp/name-* /tmp/ph /tmp/Relatorio* /tmp/prts
+rm -f /root/backup.vps
+echo -e "${GREEN}[+] Previous installation cleaned successfully.${RESET}"
+
 # System Upgrade
 echo -e "${CYAN}[i] Updating System...${RESET}"
 export DEBIAN_FRONTEND=noninteractive
