@@ -92,11 +92,18 @@ systemctl disable iranux-proxy iranux-bot > /dev/null 2>&1 || true
 rm -f /etc/systemd/system/iranux-proxy.service /etc/systemd/system/iranux-bot.service
 systemctl daemon-reload
 
-# Remove Previous SSH Tunnel Users
+# Remove Previous SSH Tunnel Users (skip the current login user to avoid killing our own session)
 echo -e "${YELLOW}[!] Removing Previous SSH Tunnel Users...${RESET}"
+# Detect the actual login user (works even under sudo)
+_CURRENT_LOGIN_USER="${SUDO_USER:-$(logname 2>/dev/null || id -un)}"
 for user in $(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd); do
+    # Skip the current login user to prevent killing our own session
+    [[ "$user" == "$_CURRENT_LOGIN_USER" ]] && continue
+    # Skip common system/admin users that should not be removed
+    [[ "$user" == "admin" ]] && continue
     pkill -u "$user" > /dev/null 2>&1 || true
-    userdel --force "$user" > /dev/null 2>&1 || true
+    sleep 0.5  # Allow the OS time to clean up processes before removing the user
+    userdel --force -r "$user" > /dev/null 2>&1 || true
 done
 
 # Clean Previous Installation Data
