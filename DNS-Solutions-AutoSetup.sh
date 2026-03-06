@@ -2010,8 +2010,9 @@ do_add_domain() {
 
     echo -e "  ${DIM}To add more domains, run again: sudo bash $0 --add-domain${NC}"
     echo ""
+    echo '#@INSTALL_COMPLETE'
 }
-echo '#@INSTALL_COMPLETE'
+
 # ─── Main ───────────────────────────────────────────────────────────────────────
 
 main() {
